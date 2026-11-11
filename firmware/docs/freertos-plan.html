@@ -1,0 +1,357 @@
+<title>Frostkern RTOS Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: spec sheet — sticky section index on the left, one reading column, wide tables scroll in place */
+:root {
+  --bg: #f5f7f8;
+  --surface: #ffffff;
+  --fg: #16212a;
+  --muted: #56656f;
+  --line: #d6dee3;
+  --accent: #0b6e8a;
+  --accent-soft: #e2f1f5;
+  --warm: #b4541c;
+  --warm-soft: #fbeee5;
+  --code-bg: #eaf0f3;
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f161b; --surface: #151f26; --fg: #e3eaee; --muted: #93a3ad; --line: #2a3843;
+    --accent: #5cc4de; --accent-soft: #15323c; --warm: #f0a070; --warm-soft: #3a2519; --code-bg: #1c2a33;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f161b; --surface: #151f26; --fg: #e3eaee; --muted: #93a3ad; --line: #2a3843;
+  --accent: #5cc4de; --accent-soft: #15323c; --warm: #f0a070; --warm-soft: #3a2519; --code-bg: #1c2a33;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 15.5px; line-height: 1.6; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 80px; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 13.5px; }
+nav.toc p { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; counter-reset: s; }
+nav.toc li { counter-increment: s; }
+nav.toc a { display: flex; gap: 10px; padding: 5px 8px; border-radius: 4px; color: var(--muted); text-decoration: none; }
+nav.toc a::before { content: counter(s, decimal-leading-zero); font-family: var(--f-mono); font-size: 11.5px; color: var(--accent); padding-top: 1px; }
+nav.toc a:hover, nav.toc a:focus-visible { background: var(--accent-soft); color: var(--fg); outline: none; }
+main { min-width: 0; }
+header.doc { border-bottom: 2px solid var(--fg); padding-bottom: 22px; margin-bottom: 8px; }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+h1 { font-family: var(--f-display); font-stretch: 80%; font-weight: 800; font-size: clamp(2.1rem, 5vw, 3.2rem); line-height: 1.02; margin: 0 0 14px; text-wrap: balance; letter-spacing: -.01em; }
+.lede { font-size: 1.05rem; color: var(--muted); max-width: 64ch; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 16px; font-family: var(--f-mono); font-size: 12.5px; color: var(--muted); }
+.meta b { color: var(--fg); font-weight: 500; }
+section { padding-top: 40px; scroll-margin-top: 16px; }
+h2 { font-family: var(--f-display); font-stretch: 85%; font-weight: 700; font-size: 1.55rem; margin: 0 0 14px; display: flex; align-items: baseline; gap: 12px; text-wrap: balance; }
+h2 .n { font-family: var(--f-mono); font-size: .8rem; font-weight: 500; color: var(--accent); }
+h3 { font-family: var(--f-display); font-stretch: 90%; font-weight: 600; font-size: 1.1rem; margin: 26px 0 10px; }
+p, li { max-width: 72ch; }
+ul { padding-left: 1.2em; }
+li + li { margin-top: 4px; }
+code { font-family: var(--f-mono); font-size: .87em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--f-mono); font-size: 11.5px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--bg); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num, .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pill { display: inline-block; font-family: var(--f-mono); font-size: 11.5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.pill.m { border-color: var(--accent); color: var(--accent); }
+.pill.s { border-color: var(--warm); color: var(--warm); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 16px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; min-width: 0; }
+.card h4 { font-family: var(--f-display); font-stretch: 85%; font-size: 1.15rem; margin: 0 0 2px; }
+.card .role { font-family: var(--f-mono); font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+.card ul { margin: 0; font-size: 14px; }
+.note { border-left: 3px solid var(--warm); background: var(--warm-soft); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 16px 0; font-size: 14.5px; max-width: 72ch; }
+.note b { color: var(--warm); }
+pre.mermaid { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px; overflow-x: auto; margin: 16px 0; }
+.frame { display: flex; flex-wrap: wrap; font-family: var(--f-mono); font-size: 12.5px; margin: 14px 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.frame span { padding: 10px 12px; border-right: 1px solid var(--line); display: grid; gap: 2px; flex: 1 1 auto; text-align: center; }
+.frame span:last-child { border-right: 0; }
+.frame small { color: var(--muted); font-size: 11px; }
+.frame .pl { flex-grow: 4; background: var(--accent-soft); }
+ol.open { list-style: none; padding: 0; margin: 14px 0; display: grid; gap: 8px; counter-reset: q; }
+ol.open li { counter-increment: q; display: grid; grid-template-columns: 2.4em minmax(0, 1fr) auto; gap: 10px; align-items: baseline; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; max-width: none; margin: 0; }
+ol.open li::before { content: "Q" counter(q); font-family: var(--f-mono); font-size: 12px; color: var(--accent); }
+footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 20px; padding-inline: 16px; padding-block: 24px 60px; }
+  nav.toc { position: static; }
+  nav.toc ol { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  ol.open li { grid-template-columns: 2.4em minmax(0, 1fr); }
+  ol.open li .pill { grid-column: 2; justify-self: start; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="wrap">
+  <nav class="toc" aria-label="Sections">
+    <p>Sections</p>
+    <ol>
+      <li><a href="#overview">System overview</a></li>
+      <li><a href="#pins">Pin map</a></li>
+      <li><a href="#config">FreeRTOS config</a></li>
+      <li><a href="#tasks">Tasks</a></li>
+      <li><a href="#ipc">Task communication</a></li>
+      <li><a href="#zigbee">Zigbee stack rules</a></li>
+      <li><a href="#power">Low-power modes</a></li>
+      <li><a href="#data">Zigbee data model</a></li>
+      <li><a href="#uart">ESP32 UART frames</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="doc">
+      <p class="eyebrow">Firmware · STM32WBA55CGU6 · FreeRTOS + Zigbee</p>
+      <h1>Frostkern FreeRTOS runtime design</h1>
+      <p class="lede">How the motor-cooling firmware is split into FreeRTOS tasks on one master and two slave boards, how those tasks share data, and how the slaves sleep on battery without losing control of the fan.</p>
+      <div class="meta">
+        <span>Status <b>agreed, v1</b></span>
+        <span>Date <b>2026-11-10</b></span>
+        <span>Source <b>firmware/docs/freertos-plan.md</b></span>
+      </div>
+    </header>
+
+    <section id="overview">
+      <h2><span class="n">01</span>System overview</h2>
+      <p>All three boards use the same PCB (<code>wba55_v1</code>). One codebase builds two configurations, <code>ROLE_MASTER</code> and <code>ROLE_SLAVE</code>. The role decides which application tasks start and which Zigbee library gets linked (FFD for the master, RFD for the slaves).</p>
+      <div class="cards">
+        <div class="card">
+          <h4>Master <span class="pill m">×1</span></h4>
+          <p class="role">Zigbee coordinator · never sleeps</p>
+          <ul>
+            <li>Powered from the car's 12 V battery through a step-down module</li>
+            <li>XIAO ESP32 is a Wi-Fi bridge to the app over UART</li>
+            <li>ESP32 power switched by <code>ESP32_EN</code> to limit drain on the car battery</li>
+            <li>No sensors, fan or pump</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>Slave <span class="pill s">×2</span></h4>
+          <p class="role">Zigbee sleepy end device · 4×AA</p>
+          <ul>
+            <li>1 NTC thermistor, 1 YF-B7 flow sensor</li>
+            <li>PC fan and pump on an external supply, switched by MOSFETs</li>
+            <li>Runs its own PID loop; the master only sends the setpoint</li>
+            <li>Pump is plain on/off</li>
+          </ul>
+        </div>
+      </div>
+<pre class="mermaid">
+flowchart LR
+  App["frostkernApp"] <-- Wi-Fi --> ESP["ESP32 (XIAO)"]
+  ESP <-- "UART, binary frames" --> M["Master WBA55<br/>Coordinator"]
+  M <-- "Zigbee" --> S1["Slave 1 WBA55<br/>Sleepy end device"]
+  M <-- "Zigbee" --> S2["Slave 2 WBA55<br/>Sleepy end device"]
+  S1 --> F1["Fan + pump"]
+  S2 --> F2["Fan + pump"]
+</pre>
+    </section>
+
+    <section id="pins">
+      <h2><span class="n">02</span>Pin map</h2>
+      <p>Read from <code>wba55_v1.kicad_pcb</code>. Alternate functions come from ST's pin database.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Signal</th><th>Pin</th><th>Use</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>PWM1</td><td class="num">PA1</td><td>Fan MOSFET</td><td>LPTIM2_CH2 (AF13). The only PWM pin with a low-power timer.</td></tr>
+          <tr><td>PWM2</td><td class="num">PA2</td><td>Pump MOSFET</td><td>Plain GPIO, on/off</td></tr>
+          <tr><td>PWM3</td><td class="num">PA10</td><td>Spare</td><td>TIM3_CH1</td></tr>
+          <tr><td>YFB7_DIV</td><td class="num">PA0</td><td>Flow pulses</td><td>LPTIM1_IN1 (AF0), keeps counting in Stop 1</td></tr>
+          <tr><td>NTC_DIV</td><td class="num">PA5</td><td>NTC divider</td><td>ADC4_IN4</td></tr>
+          <tr><td>NTC_BIAS</td><td class="num">PB15</td><td>NTC bias switch</td><td>High only while sampling</td></tr>
+          <tr><td>BAT_SENS</td><td class="num">PA6</td><td>Battery divider</td><td>ADC4_IN3</td></tr>
+          <tr><td>YFB7_EN</td><td class="num">PB6</td><td>YF-B7 load switch</td><td></td></tr>
+          <tr><td>BOOST_EN</td><td class="num">PB5</td><td>5 V buck-boost</td><td>The YF-B7 needs 5 V</td></tr>
+          <tr><td>ESP32_EN</td><td class="num">PB7</td><td>ESP32 load switch</td><td><span class="pill m">master</span></td></tr>
+          <tr><td>WBA_TX / RX</td><td class="num">PA12 / PA11</td><td>UART to ESP32</td><td><span class="pill m">master</span> Confirm the USART instance in CubeMX</td></tr>
+          <tr><td>IRQ</td><td class="num">PA9</td><td>ESP32 interrupt</td><td><span class="pill m">master</span></td></tr>
+          <tr><td>PAIR_BTN</td><td class="num">PA7</td><td>Button</td><td>Master: open joining. Slave: hold 5 s to leave and reset.</td></tr>
+          <tr><td>LD1</td><td class="num">PB4</td><td>Status LED</td><td></td></tr>
+          <tr><td>SCL / SDA</td><td class="num">PB2 / PB1</td><td>I2C header</td><td>Unused in v1</td></tr>
+          <tr><td>VCP1_TX / RX</td><td class="num">PB12 / PA8</td><td>Debug UART</td><td></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="config">
+      <h2><span class="n">03</span>FreeRTOS config</h2>
+      <p>Bare bones, copied from ST's <code>Zigbee_OnOff_*_FreeRtos</code> examples (STM32CubeWBA v1.10.0, X-CUBE-FREERTOS 1.3.1).</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Heap</td><td class="num">heap_4, 32768 B to start</td></tr>
+          <tr><td><code>configTICK_RATE_HZ</code></td><td class="num">100</td></tr>
+          <tr><td><code>configUSE_TICKLESS_IDLE</code></td><td class="num">2 (ST's own sleep routine)</td></tr>
+          <tr><td><code>configMAX_PRIORITIES</code></td><td class="num">56</td></tr>
+          <tr><td><code>configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY</code></td><td class="num">5 (4 priority bits)</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li>ST's generated stack code stays on CMSIS-RTOS2 and is never edited. Our tasks use the native FreeRTOS API.</li>
+        <li>Application tasks are created once at startup and never deleted.</li>
+        <li>Later, not in v1: stack overflow checking, malloc-failed hook, stack high-water-mark logging.</li>
+      </ul>
+    </section>
+
+    <section id="tasks">
+      <h2><span class="n">04</span>Tasks</h2>
+      <h3>ST Zigbee stack tasks (generated)</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Task</th><th>CMSIS priority</th><th>Native</th><th>Stack</th></tr></thead>
+        <tbody>
+          <tr><td>MacLayer</td><td class="num">osPriorityRealtime3</td><td class="num">51</td><td class="num">2048 B</td></tr>
+          <tr><td>Link Layer</td><td class="num">osPriorityRealtime2</td><td class="num">50</td><td class="num">3072 B</td></tr>
+          <tr><td>ZigbeeLayer</td><td class="num">osPriorityRealtime1</td><td class="num">49</td><td class="num">3072 B</td></tr>
+          <tr><td>RNG</td><td class="num">osPriorityHigh</td><td class="num">40</td><td class="num">512 B</td></tr>
+        </tbody>
+      </table></div>
+      <p>ST's example application tasks (NwkFormJoin, Application) are replaced by <code>ZbAppTask</code>.</p>
+
+      <h3>Application tasks</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Role</th><th>Task</th><th>Job</th><th>Prio</th><th>Stack</th><th>Runs when</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill s">slave</span></td><td><code>ControlTask</code></td><td>PID → fan duty (LPTIM2 PWM); owns the pump output</td><td class="num">32</td><td class="num">1024 B</td><td>New sample or setpoint</td></tr>
+          <tr><td><span class="pill s">slave</span></td><td><code>SensorTask</code></td><td>NTC bias + ADC → °C; LPTIM1 count → flow; battery voltage</td><td class="num">28</td><td class="num">1024 B</td><td>Every 2 s active, 30 s idle</td></tr>
+          <tr><td><span class="pill">both</span></td><td><code>ZbAppTask</code></td><td>Form or join the network, clusters, reporting, setpoint writes</td><td class="num">24</td><td class="num">3072 B</td><td>Stack callbacks, events, poll timer</td></tr>
+          <tr><td><span class="pill m">master</span></td><td><code>BridgeTask</code></td><td>Binary UART frames to and from the ESP32; ESP32 power</td><td class="num">20</td><td class="num">1536 B</td><td>UART data, events</td></tr>
+          <tr><td><span class="pill">both</span></td><td><code>SupervisorTask</code></td><td>Watchdog check-ins, battery, faults, LED, button</td><td class="num">16</td><td class="num">768 B</td><td>Periodic (policy TBD)</td></tr>
+        </tbody>
+      </table></div>
+      <p class="note"><b>Estimates.</b> Priorities and stack sizes are starting values, to be tuned once stack logging is added.</p>
+    </section>
+
+    <section id="ipc">
+      <h2><span class="n">05</span>Task communication</h2>
+<pre class="mermaid">
+flowchart LR
+  ADC(["ADC4 + LPTIM1"]) --> Sensor["SensorTask"]
+  Sensor -- "qSample (overwrite)" --> Control["ControlTask"]
+  Sensor --> Status[("gStatus + mutex")]
+  Control --> Status
+  Status --> ZbApp["ZbAppTask"]
+  Status --> Bridge["BridgeTask (master)"]
+  ZbApp -- "qConfig" --> Control
+  Control --> PWM(["LPTIM2 PWM + pump GPIO"])
+</pre>
+      <div class="tbl"><table>
+        <thead><tr><th>Object</th><th>Type</th><th>From → to</th><th>Holds</th></tr></thead>
+        <tbody>
+          <tr><td><code>qSample</code></td><td>Queue, 1 slot, <code>xQueueOverwrite</code></td><td>Sensor → Control</td><td>Latest temp, flow, battery, timestamp</td></tr>
+          <tr><td><code>gStatus</code></td><td>Struct + mutex</td><td>Sensor, Control → ZbApp, Bridge, Supervisor</td><td>Latest measurements, fan duty, mode, faults</td></tr>
+          <tr><td><code>qConfig</code></td><td>Queue</td><td>ZbApp → Control</td><td>New setpoint</td></tr>
+          <tr><td><code>evSystem</code></td><td>Event group</td><td>Any → any</td><td><code>EV_FAULT</code>, <code>EV_BUTTON</code>, <code>EV_REPORT_NOW</code>, <code>EV_MODE_CHANGE</code>, watchdog check-in bits</td></tr>
+        </tbody>
+      </table></div>
+      <p>Interrupt handlers use only the <code>FromISR</code> calls and sit at NVIC priority 5 or lower (numerically ≥ 5).</p>
+    </section>
+
+    <section id="zigbee">
+      <h2><span class="n">06</span>Zigbee stack rules</h2>
+      <ul>
+        <li>Stack: Exegin Zigbee R23, shipped as precompiled libraries: <code>ZigBeeProR23_FFD.a</code> (master), <code>ZigBeeProR23_RFD.a</code> (slaves), <code>ZigBeeClusters.a</code>.</li>
+        <li>Starting points: <code>Zigbee_OnOff_Server_Coord_FreeRtos</code> for the master. There is no FreeRTOS sleepy-end-device example, so the slave combines the FreeRTOS structure of <code>Zigbee_OnOff_Client_Router_FreeRtos</code> with the sleep settings of <code>Zigbee_TempMeas_Server_SED</code>.</li>
+        <li>Radio interrupt priorities from ST's <code>app_conf.h</code>: high 5, low 7, software-low 14, RCC 1. Our own interrupts that call FreeRTOS go in 6–13.</li>
+        <li>Only <code>ZbAppTask</code> calls Zigbee APIs. Never call them from an interrupt.</li>
+      </ul>
+    </section>
+
+    <section id="power">
+      <h2><span class="n">07</span>Low-power modes (slaves)</h2>
+      <p>A slave spends most of its life in idle mode, which is where the battery savings come from. It switches to active mode as the motor warms up, with hysteresis so it doesn't flip back and forth. Every number is a <code>#define</code> in one config header.</p>
+      <div class="tbl"><table>
+        <thead><tr><th></th><th>Active mode</th><th>Idle mode</th></tr></thead>
+        <tbody>
+          <tr><td>Enter when</td><td>temp ≥ setpoint − <code>MARGIN</code> (e.g. 5 °C)</td><td>temp &lt; setpoint − <code>MARGIN</code> − <code>HYST</code></td></tr>
+          <tr><td>Sampling</td><td class="num">2 s, PID runs</td><td class="num">30 s, fan off, no PID</td></tr>
+          <tr><td>Report to master</td><td>every 60 s, or temp moves &gt; 0.5 °C, or fault</td><td>every 5 min, or change, or fault</td></tr>
+          <tr><td>Parent poll</td><td class="num">every 10 s</td><td class="num">every 60 s</td></tr>
+          <tr><td>Sleep depth</td><td>Stop 1 if LPTIM2 PWM survives it, otherwise Sleep while the fan runs</td><td>Stop 1</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Hardware facts behind this</h3>
+      <ul>
+        <li>The WBA55 has Stop 0, Stop 1 and Standby. It has no Stop 2.</li>
+        <li>LPTIM1 counts pulses on PA0 in Stop 1. ST ships this exact example (<code>LPTIM_PulseCounter</code>, NUCLEO-WBA55CG).</li>
+        <li>Regular timers (TIM1/2/3/16/17) stop in Stop mode, so the fan PWM must come from LPTIM2 on PA1.</li>
+        <li>ADC4 can convert by itself in Stop 1. DMA only runs in Stop 0.</li>
+        <li>The independent watchdog keeps counting in Stop, so the supervisor must wake up before it expires.</li>
+      </ul>
+      <p class="note"><b>Check on hardware first:</b> does LPTIM2's PWM output keep toggling in Stop 1? That decides the sleep depth in active mode.</p>
+    </section>
+
+    <section id="data">
+      <h2><span class="n">08</span>Zigbee data model</h2>
+      <p>Each slave exposes one endpoint with standard clusters only. There is no manufacturer-specific cluster, and the PID gains are compiled into the firmware.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Cluster</th><th>ID</th><th>Key attributes</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Temperature Measurement</td><td class="num">0x0402</td><td>MeasuredValue (int16, 0.01 °C)</td><td>Shipped by ST</td></tr>
+          <tr><td>Flow Measurement</td><td class="num">0x0404</td><td>MeasuredValue (uint16, 0.1 m³/h), min, max</td><td>Put together by us with ST's generic cluster API</td></tr>
+          <tr><td>Fan Control</td><td class="num">0x0202</td><td>FanMode (off / low / med / high / on / auto)</td><td>Shipped by ST</td></tr>
+          <tr><td>Thermostat</td><td class="num">0x0201</td><td>OccupiedCoolingSetpoint (int16, 0.01 °C)</td><td>Master or app writes the setpoint. Confirm ST ships it.</td></tr>
+          <tr><td>Power Configuration</td><td class="num">0x0001</td><td>BatteryVoltage (100 mV), BatteryPercentageRemaining</td><td>Shipped by ST</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Pairing</h3>
+      <ul>
+        <li>The app's <b>Pair</b> button, or the master's physical button, opens joining on the master for 180 s.</li>
+        <li>A slave that isn't on a network searches on its own, waiting longer between tries: 10 s, then 1 min, then every 5 min.</li>
+        <li>Holding a slave's button for 5 s makes it leave the network and reset.</li>
+        <li>Network details are saved in flash, so boards rejoin by themselves after a reset or battery swap.</li>
+        <li>Security: the Zigbee 3.0 default trust-center link key.</li>
+      </ul>
+    </section>
+
+    <section id="uart">
+      <h2><span class="n">09</span>ESP32 UART frames <span class="pill">draft</span></h2>
+      <div class="frame" role="img" aria-label="Frame layout: start byte, length, type, sequence, payload, CRC16">
+        <span>0xA5<small>start</small></span>
+        <span>LEN<small>1 B</small></span>
+        <span>TYPE<small>1 B</small></span>
+        <span>SEQ<small>1 B</small></span>
+        <span class="pl">PAYLOAD<small>LEN bytes</small></span>
+        <span>CRC16<small>CCITT, 2 B</small></span>
+      </div>
+      <div class="tbl"><table>
+        <thead><tr><th>Type</th><th>Direction</th><th>Payload</th></tr></thead>
+        <tbody>
+          <tr><td><code>TELEMETRY</code></td><td>WBA → ESP32</td><td>slave id, temp, flow, FanMode, battery, mode, fault flags</td></tr>
+          <tr><td><code>SET_SETPOINT</code></td><td>ESP32 → WBA</td><td>slave id (or all), setpoint in 0.01 °C</td></tr>
+          <tr><td><code>PERMIT_JOIN</code></td><td>ESP32 → WBA</td><td>duration in seconds</td></tr>
+          <tr><td><code>DEVICE_JOINED</code></td><td>WBA → ESP32</td><td>slave id, IEEE address</td></tr>
+          <tr><td><code>ACK</code> / <code>NACK</code></td><td>both</td><td>sequence number, error code</td></tr>
+        </tbody>
+      </table></div>
+      <p>The ESP32 turns these frames into whatever it uses to reach the app. Whether that's MQTT is still open.</p>
+    </section>
+
+    <section id="open">
+      <h2><span class="n">10</span>Open questions</h2>
+      <ol class="open">
+        <li>Fail-safe policy: sensor fault, lost connection, watchdog behaviour, pump on a flow fault. <span class="pill s">partner</span></li>
+        <li>MQTT or something else between the ESP32 and the app. <span class="pill">ESP32</span></li>
+        <li>Which PID library to use. <span class="pill">research</span></li>
+        <li>Does LPTIM2 PWM on PA1 keep running in Stop 1? <span class="pill s">hardware test</span></li>
+        <li>Engine-running detection (12 V level into an ADC) for a later board revision. <span class="pill">next board</span></li>
+        <li>Install codes instead of the default link key. <span class="pill">security</span></li>
+        <li>The YF-B7 needs the 5 V boost and its load switch on. Power it all the time, or only in active mode and short windows in idle? <span class="pill">power</span></li>
+        <li>The standard flow cluster's resolution is 0.1 m³/h (about 1.7 L/min). Is that fine enough? <span class="pill">data model</span></li>
+        <li>Fan Control has no duty-percent attribute. Is FanMode enough for the app? <span class="pill">data model</span></li>
+        <li>Not yet checked against the datasheet or reference manual: LPTIM2 in Stop 1, ADC4 autonomy, Standby under FreeRTOS, whether ST ships the Thermostat cluster. <span class="pill">verify</span></li>
+      </ol>
+    </section>
+
+    <footer>Frostkern firmware · machine-readable copy in <code>firmware/docs/freertos-plan.md</code></footer>
+  </main>
+</div>
