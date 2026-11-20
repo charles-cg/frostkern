@@ -79,6 +79,14 @@ void MX_USART1_UART_Init(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define ESP32_EN_Pin GPIO_PIN_7
+#define ESP32_EN_GPIO_Port GPIOB
+#define YFB7_EN_Pin GPIO_PIN_6
+#define YFB7_EN_GPIO_Port GPIOB
+#define BOOST_EN_Pin GPIO_PIN_5
+#define BOOST_EN_GPIO_Port GPIOB
+#define LD1_Pin GPIO_PIN_4
+#define LD1_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

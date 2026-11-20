@@ -19,6 +19,9 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_freertos.h"
+#include "main.h"
+#include "projdefs.h"
+#include "stm32wbaxx_hal_gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -54,7 +57,7 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+static void HeartbeatTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 /* USER CODE BEGIN 4 */
@@ -105,6 +108,10 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+    if (xTaskCreate(HeartbeatTask, "Heartbeat", 256, NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
+  {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -132,6 +139,13 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+static void HeartbeatTask(void *argument) {
+  (void)argument;
 
+  for (;;) {
+    HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
 /* USER CODE END Application */
 

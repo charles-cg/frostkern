@@ -245,11 +245,10 @@ extern UART_HandleTypeDef           huart1;
  * When CFG_BUTTON_SUPPORTED is set, the push button are activated if requested
  */
 
-#define CFG_BSP_ON_NUCLEO           (1)
 #define CFG_BSP_ON_FREERTOS         (1)
 
-#define CFG_LED_SUPPORTED           (1)
-#define CFG_BUTTON_SUPPORTED        (1)
+#define CFG_LED_SUPPORTED           (0)
+#define CFG_BUTTON_SUPPORTED        (0)
 
 /**
  * If CFG_LPM_LEVEL at 2, make sure LED are disabled
