@@ -110,6 +110,7 @@ All numbers are `#define`s in one config header.
 Real battery savings are a demo requirement. During development the slave runs with `CFG_LPM_LEVEL` 0 (debugger stays attached); Stop 1 is proven in a spike right after the SED joins and enabled for good at the end (see `roadmap.md`).
 
 Hardware facts:
+- Board erratum (`wba55_v1`): the 32.768 kHz LSE crystal does not start at ST's default drive (MediumLow). It starts at `RCC_LSEDRIVE_HIGH`, set in both `.ioc` files. Likely the 6 pF load caps don't match the crystal's CL; check the crystal datasheet for v2.
 - WBA55 has Stop 0, Stop 1 and Standby only (no Stop 2).
 - LPTIM1 pulse counting on PA0 works in Stop 1 (ST example `LPTIM_PulseCounter`, NUCLEO-WBA55CG).
 - TIM1/2/3/16/17 stop in Stop mode.

@@ -1,0 +1,6 @@
+[ProjectFiles]
+HeaderPath=Board
+
+[Groups]
+Doc=../README.md;
+Board=../Board/stm32wbaxx_nucleo.c;../Board/app_bsp.c;
