@@ -39,14 +39,14 @@ ENTRY(Reset_Handler)
 _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
 _sstack = _estack - _Min_Stack_Size;
 
-_Min_Heap_Size = 0x200; /* required amount of heap */
-_Min_Stack_Size = 0x400; /* required amount of stack */
+_Min_Heap_Size = 0x10000; /* required amount of heap */
+_Min_Stack_Size = 0x1000; /* required amount of stack */
 
 /* Memories definition */
 MEMORY
 {
-  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 64K
-  RAM2   (xrw)    : ORIGIN = 0x20010000,   LENGTH = 64K
+  /* RAM1 + RAM2 contiguas, como el ejemplo WBA55 Zigbee FreeRTOS de ST. */
+  RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
   FLASH  (rx)     : ORIGIN = 0x08000000,   LENGTH = 1024K
 }
 

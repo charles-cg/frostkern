@@ -42,7 +42,12 @@
 
 /* Private includes -----------------------------------------------------------*/
 /* USER CODE BEGIN PI */
-
+#include "app_network_config.h"
+#include "zcl/general/zcl.basic.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "app_task_config.h"
+#include "app_ipc.h"
 /* USER CODE END PI */
 
 /* Public variables -----------------------------------------------------------*/
@@ -55,7 +60,7 @@ ZigbeeAppInfo_t                                     stZigbeeAppInfo;
 /* Private defines -----------------------------------------------------------*/
 #define APP_ZIGBEE_BLINK_LED_DELAY                  1000u             // Time (in ms) between two Led Blinck during the Startup/Join (up to 17 s).
 #define APP_ZIGBEE_STARTUP_WAIT_DELAY               ( 60u * 1000u )   // Time (in ms) to wait the finish Join (60 seconds).
-#define APP_ZIGBEE_STARTUP_FAIL_DELAY               500u              // Time (in ms) between two tentative to Join a Coord/Router.
+/* Join retry pauses are selected by AppNetwork_JoinRetryDelayMs(). */
 
 /* Defines for Basic Cluster Server */
 #define APP_ZIGBEE_MFR_NAME                         "STMicroelectronics"
@@ -69,6 +74,12 @@ ZigbeeAppInfo_t                                     stZigbeeAppInfo;
 #define APP_ZIGBEE_STACK_VERSION                    ( ( 26u << 2u ) | 6u )  // Stack Version 2026.6
 
 /* USER CODE BEGIN PD */
+#undef APP_ZIGBEE_BOARD_POWER
+#if APP_IS_MASTER
+#define APP_ZIGBEE_BOARD_POWER ZCL_BASIC_POWER_DC
+#else
+#define APP_ZIGBEE_BOARD_POWER ZCL_BASIC_POWER_BATTERY
+#endif
 
 /* USER CODE END PD */
 
@@ -100,18 +111,8 @@ static UTIL_TIMER_Object_t      stZbCallbackTimeOutTimer, stZbRestartJoinTimer, 
 osSemaphoreId_t                 EndWaitCallbackSemaphore;
 osSemaphoreId_t                 NwkFormStartSemaphore;
 osSemaphoreId_t                 NwkFormRestartWaitEndSemaphore;
-osThreadId_t                    NwkFormJoinTask;
+TaskHandle_t NwkFormJoinTask = NULL;
 
-static const osThreadAttr_t stNwkFormJoinTask_attributes =
-{
-  .name         = "NwkFormJoin Task",
-  .priority     = TASK_PRIO_ZIGBEE_NETWORK_FORM,
-  .stack_size   = TASK_STACK_SIZE_ZIGBEE_NETWORK_FORM,
-  .attr_bits    = TASK_DEFAULT_ATTR_BITS,
-  .cb_mem       = TASK_DEFAULT_CB_MEM,
-  .cb_size      = TASK_DEFAULT_CB_SIZE,
-  .stack_mem    = TASK_DEFAULT_STACK_MEM
-};
 
 /* USER CODE BEGIN PV */
 
@@ -145,12 +146,24 @@ void APP_ZIGBEE_NwkFormOrJoinTaskInit( void )
   NwkFormRestartWaitEndSemaphore = osSemaphoreNew( 1U, 0U, NULL );
   EndWaitCallbackSemaphore = osSemaphoreNew( 1U, 0U, NULL );
 
-  NwkFormJoinTask = osThreadNew( APP_ZIGBEE_NwkFormOrJoinTask, NULL, &stNwkFormJoinTask_attributes );
-
-  if ( ( NwkFormJoinTask == NULL ) || ( NwkFormStartSemaphore == NULL ) || ( NwkFormRestartWaitEndSemaphore == NULL ) || ( EndWaitCallbackSemaphore == NULL ) )
+  if ((NwkFormStartSemaphore == NULL) ||
+      (NwkFormRestartWaitEndSemaphore == NULL) ||
+      (EndWaitCallbackSemaphore == NULL))
   {
-    LOG_ERROR_APP( "Network Join FreeRtos objects creation FAILED" );
-    Error_Handler();
+      Error_Handler();
+      return;
+  }
+
+  if (xTaskCreate(
+          APP_ZIGBEE_NwkFormOrJoinTask,
+          "ZbAppTask",
+          APP_STACK_DEPTH(APP_TASK_STACK_ZIGBEE),
+          NULL,
+          APP_TASK_PRIO_ZIGBEE,
+          &NwkFormJoinTask) != pdPASS)
+  {
+      Error_Handler();
+      return;
   }
 
   /* launch the startup of the mesh network setup */
@@ -323,6 +336,7 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
 {
   enum ZbStatusCodeT  eStatus = ZB_ZDP_STATUS_TIMEOUT;
   struct ZbStartupT   stConfig;
+  uint32_t failedAttemptIndex = 0U;
 
   while ( eStatus != ZB_STATUS_SUCCESS )
   {
@@ -366,8 +380,13 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
     }
     else
     {
+      uint32_t retryDelayMs = AppNetwork_JoinRetryDelayMs( failedAttemptIndex );
+      if ( failedAttemptIndex < 2U )
+      {
+        failedAttemptIndex++;
+      }
       LOG_INFO_APP( "Startup Wait Callback Status : 0x%02X", stZigbeeAppInfo.eJoinStatus );
-      LOG_INFO_APP( "Startup failed, attempting again after a short delay (%d ms)", APP_ZIGBEE_STARTUP_FAIL_DELAY );
+      LOG_INFO_APP( "Startup failed, attempting again after a delay (%lu ms)", (unsigned long) retryDelayMs );
 
       /* If Device, reset ZigBee data to be sure that start with good data */
       if ( stZigbeeAppInfo.eStartupControl == ZbStartTypeJoin )
@@ -375,7 +394,7 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
         ZbReset( stZigbeeAppInfo.pstZigbee );
       }
 
-      UTIL_TIMER_StartWithPeriod( &stZbRestartJoinTimer, APP_ZIGBEE_STARTUP_FAIL_DELAY );
+      UTIL_TIMER_StartWithPeriod( &stZbRestartJoinTimer, retryDelayMs );
 
       /* Wait Restart Wait finished */
       osSemaphoreAcquire( NwkFormRestartWaitEndSemaphore, osWaitForever );
@@ -388,15 +407,42 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
  * @param  None
  * @retval None
  */
-static void APP_ZIGBEE_NwkFormOrJoinTask( void * argument )
+static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
 {
-  UNUSED( argument );
+    UNUSED(argument);
 
-  for(;;)
-  {
-    osSemaphoreAcquire( NwkFormStartSemaphore, osWaitForever );
+    AppZbCommand command;
+
+    /* Esperar la autorización de inicio. */
+    osSemaphoreAcquire(NwkFormStartSemaphore, osWaitForever);
+
+    /* Formar la red o unirse; incluye los reintentos existentes. */
     APP_ZIGBEE_NwkFormOrJoin();
-  }
+
+    /* Después del inicio, atender comandos de aplicación. */
+    for (;;)
+    {
+        if (xQueueReceive(qZbCommand,
+                          &command,
+                          portMAX_DELAY) != pdPASS)
+        {
+            continue;
+        }
+
+#if APP_IS_MASTER
+        if ((command.type == APP_ZB_COMMAND_PERMIT_JOIN) &&
+            (command.permit_seconds <= 254U))
+        {
+            APP_ZIGBEE_PermitJoin(command.permit_seconds);
+        }
+        else
+        {
+            LOG_INFO_APP("Unsupported Zigbee command");
+        }
+#else
+        LOG_INFO_APP("Zigbee command not supported by Slave");
+#endif
+    }
 }
 
 /**
