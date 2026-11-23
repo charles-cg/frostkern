@@ -1,31 +1,35 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * File Name          : app_freertos.c
-  * Description        : FreeRTOS applicative file
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * File Name          : app_freertos.c
+ * Description        : FreeRTOS applicative file
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
 #include "app_freertos.h"
-#include "main.h"
-#include "projdefs.h"
-#include "stm32wbaxx_hal_gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "app_common.h"
+#include "fk_config.h"
+#include "fk_rtos.h"
+#include "fk_types.h"
+#include "main.h"
+#include "portmacrocommon.h"
+#include "projdefs.h"
+#include "log_module.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,33 +49,37 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+static const char *volatile fk_overflowTask;
+EventGroupHandle_t evSystem;
+fk_status_t gStatus[FK_MAX_SLAVES];
+SemaphoreHandle_t gStatusMutex;
+TaskHandle_t bridgeHandle;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128 * 4
-};
+    .name = "defaultTask",
+    .priority = (osPriority_t)osPriorityNormal,
+    .stack_size = 128 * 4};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-static void HeartbeatTask(void *argument);
+static void SupervisorTask(void *argument);
+static void BridgeTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 /* USER CODE BEGIN 4 */
-void vApplicationStackOverflowHook(xTaskHandle xTask, char *pcTaskName)
-{
-   /* Run time stack overflow checking is performed if
-   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
-   called if a stack overflow is detected. */
+void vApplicationStackOverflowHook(xTaskHandle xTask, char *pcTaskName) {
+  /* Run time stack overflow checking is performed if
+  configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
+  called if a stack overflow is detected. */
+  fk_overflowTask = pcTaskName;
+  Error_Handler();
 }
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN VPORT_SUPPORT_TICKS_AND_SLEEP */
-__weak void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
-{
+__weak void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime) {
   // Generated when configUSE_TICKLESS_IDLE == 2.
   // Function called in tasks.c (in portTASK_FUNCTION).
   // TO BE COMPLETED or TO BE REPLACED by a user one, overriding that weak one.
@@ -79,10 +87,10 @@ __weak void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
 /* USER CODE END VPORT_SUPPORT_TICKS_AND_SLEEP */
 
 /**
-  * @brief  FreeRTOS initialization
-  * @param  None
-  * @retval None
-  */
+ * @brief  FreeRTOS initialization
+ * @param  None
+ * @retval None
+ */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
@@ -90,6 +98,10 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  gStatusMutex = xSemaphoreCreateMutex();
+  if (gStatusMutex == NULL) {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -104,34 +116,43 @@ void MX_FREERTOS_Init(void) {
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
   /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  defaultTaskHandle =
+      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
-    if (xTaskCreate(HeartbeatTask, "Heartbeat", 256, NULL, tskIDLE_PRIORITY + 1, NULL) != pdPASS)
-  {
+  if (xTaskCreate(SupervisorTask, "SupervisorTask",
+                  FK_SUPERVISOR_TASK_STACK_BYTES / sizeof(StackType_t), NULL,
+                  FK_SUPERVISOR_TASK_PRIO, NULL) != pdPASS) {
+    Error_Handler();
+  }
+
+  if (xTaskCreate(BridgeTask, "BridgeTask",
+                  FK_BRIDGE_TASK_STACK_BYTES / sizeof(StackType_t), NULL,
+                  FK_BRIDGE_TASK_PRIO, &bridgeHandle) != pdPASS) {
     Error_Handler();
   }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
+  evSystem = xEventGroupCreate();
+  if (evSystem == NULL) {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_EVENTS */
-
 }
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
-* @brief Function implementing the defaultTask thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the defaultTask thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
+void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN defaultTask */
   /* Infinite loop */
-  for(;;)
-  {
+  for (;;) {
     osDelay(1);
   }
   /* USER CODE END defaultTask */
@@ -139,13 +160,39 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-static void HeartbeatTask(void *argument) {
+static void SupervisorTask(void *argument) {
   (void)argument;
+
+  TickType_t lastLog = xTaskGetTickCount();
 
   for (;;) {
     HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(FK_LED_BLINK_MS));
+    TickType_t now = xTaskGetTickCount();
+    if (now - lastLog >= pdMS_TO_TICKS(FK_DIAG_PERIOD_MS)) {
+      UBaseType_t supFreeWords    = uxTaskGetStackHighWaterMark(NULL);
+      UBaseType_t bridgeFreeWords = uxTaskGetStackHighWaterMark(bridgeHandle);
+      size_t      heapMinFree     = xPortGetMinimumEverFreeHeapSize();
+
+      LOG_INFO_APP("Diag: stack free sup=%u B bridge=%u B, heap min free=%u B",
+                   (unsigned)(supFreeWords * sizeof(StackType_t)),
+                   (unsigned)(bridgeFreeWords * sizeof(StackType_t)),
+                   (unsigned)heapMinFree);
+
+      lastLog = now;
+    }
+  }
+}
+
+static void BridgeTask(void *argument) {
+  (void)argument;
+  for (;;) {
+    EventBits_t bits = xEventGroupWaitBits(evSystem, FK_EV_PERMIT_JOIN, pdTRUE,
+                                           pdFALSE, portMAX_DELAY);
+
+    if ((bits & FK_EV_PERMIT_JOIN) != 0U) {
+      LOG_INFO_APP("Bridge: permit join requested");
+    }
   }
 }
 /* USER CODE END Application */
-

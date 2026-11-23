@@ -4,6 +4,13 @@ Status: agreed design, v2 (2026-11-19). v1 was 2026-11-10. Schedule and session 
 
 ## 1. System overview
 
+Target vehicle: gasoline (combustion-engine) car, not an EV (decided 2026-11-21). Each slave's loop is a **simulation of an engine coolant loop**, with the slave board placed as if in the engine bay. Consequences:
+- Demo rig: a bench rig with a heater that is **not controllable** (always on when plugged in). Loop kept at **≤ 80 °C**; demo setpoint **60–70 °C**; slave sets `AbsMinCoolSetpointLimit` / `AbsMaxCoolSetpointLimit` to **30 °C / 95 °C** (replacing the cluster's default 16–32 °C).
+- The YF-B7 is rated for water up to 80 °C by some sources and 100 °C by others; no manufacturer datasheet confirmed, hence the 80 °C loop limit.
+- NTC divider: R19 = 22 kΩ from `NTC_BIAS` (PB15) to `NTC_DIV`, NTC from `NTC_DIV` to GND. NTC believed to be **50 kΩ / B3950** (YF-B7 built-in type), not yet verified: measure it at room temperature before B4 (≈50 kΩ at 25 °C). At 90 °C this gives ~0.58 V and ~12 ADC counts/°C (12-bit), which is enough. If it turns out to be 10 kΩ, change R19 to ~1.5–2.2 kΩ.
+- A real engine bay (100–120 °C) exceeds alkaline AA ratings (~55–60 °C). Fine for the bench rig; a real install needs a different power source.
+- With a combustion engine, 12 V rises to ~13.8–14.4 V while the alternator charges, which makes engine-running detection (open question 3) a simple voltage threshold.
+
 | Board | Count | Zigbee role | Power | Sleeps? |
 |---|---|---|---|---|
 | Master | 1 | Coordinator (trust center) | Car 12 V battery via step-down module | Never |
@@ -146,6 +153,7 @@ The ESP32 converts frames to JSON over a WebSocket on its own SoftAP. Frame form
 ## 10. Fail-safe (minimum for v1)
 
 - NTC reading out of range → fault flag, fan 100 %, report immediately.
+- Loop temperature ≥ 80 °C (`FK_OVERTEMP_C` in `fk_config.h`) → `OVERTEMP` fault flag, fan 100 %, report immediately; the app shows an alarm so the operator unplugs the heater (it is not MCU-controlled). Clears below the threshold minus a hysteresis.
 - Slave loses its parent → keep running PID on the last setpoint, rejoin with backoff.
 - No flow for > 5 s → fault flag + report (pump stays on; it is not MCU-controlled).
 - IWDG watchdog policy: after the demo.

@@ -41,7 +41,7 @@ Examples live in `~/STM32Cube/Repository/STM32Cube_FW_WBA_V1.10.0/Projects/NUCLE
 | ✅ | Nov 24 | all | **Checkpoint:** merge `firmware` into `main`. **Freeze** the UART frame format and WebSocket JSON | |
 | B3b | Nov 25 | firmware | Low-power spike: slave with `CFG_LPM_LEVEL` 2 (Stop 1 + tickless), only Zigbee polling running. Measure current. Then back to LPM 0 for development | Slave still polls and answers in Stop 1; sleep and awake current written down |
 | E1 | Nov 25 | esp32 | SoftAP + WebSocket server sending fake telemetry JSON | Phone joins the AP and sees JSON in a WebSocket client |
-| B4 | Nov 26 | firmware | `SensorTask`: NTC on ADC4 with switched bias (PB15), battery on ADC4 | °C within ±1 °C of a reference thermometer; battery voltage within ±50 mV of a multimeter |
+| B4 | Nov 26 | firmware | `SensorTask`: NTC on ADC4 with switched bias (PB15), battery on ADC4 | NTC measured with a multimeter first (≈50 kΩ at 25 °C). °C within ±1 °C of a reference thermometer at room temperature and in hot water near 70 °C; battery voltage within ±50 mV of a multimeter |
 | B5 | Nov 26 | firmware | LPTIM1 pulse counting on PA0; boost + YF-B7 power control (Active: continuous, Idle: 2 s window every 5 min) | L/min matches a timed bucket fill within 10 % |
 | A1 | Nov 26 | app | Connect to the ESP32, show live telemetry | Fake telemetry updates on screen |
 | B6 | Nov 27 | firmware | `ControlTask`: fan PWM on LPTIM2 (PA1), PID (decide: own PI vs CMSIS-DSP; default own PI) | Fan duty follows temperature; holds setpoint without oscillating |
@@ -52,6 +52,7 @@ Examples live in `~/STM32Cube/Repository/STM32Cube_FW_WBA_V1.10.0/Projects/NUCLE
 | E2 | Nov 29 | esp32 | Real UART frames ⇄ JSON | App shows real slave data |
 | B9 | Nov 30 | firmware | Final low-power integration on both slaves; check LPTIM1 counting and LPTIM2 PWM in Stop 1 (fallback: Sleep while the fan runs) | Idle and Active current measured; battery-life estimate computed |
 | — | Nov 30 | all | End-to-end: app → ESP32 → master → slave and back | Setpoint from the app reaches a slave; telemetry reaches the app |
+| — | before Dec 1 | rig | Heater on, fan at 100 %: does the loop level off below 80 °C? If not: smaller heater, bigger radiator, or manual heater switching during the demo | Loop temperature plateau written down |
 | ✅ | Dec 1 | all | Soak test with both slaves, battery numbers, demo rehearsal. **Merge** into `main` | Runs for several hours without a fault |
 
 ## Demo scope
@@ -85,9 +86,11 @@ Examples live in `~/STM32Cube/Repository/STM32Cube_FW_WBA_V1.10.0/Projects/NUCLE
 | Pump | Always on, not controlled by the MCU; PA2 unused (analog) |
 | Idle power | Fan off, boost + YF-B7 off except a 2 s flow window every 5 min; NTC every 30 s with pulsed bias |
 | Zigbee data model | Standard Temperature, Power Config, Thermostat; one manufacturer cluster `0xFC00` for flow (0.01 L/min), fan duty %, mode, faults. No Flow Measurement or Fan Control cluster |
-| Setpoint range | Thermostat default 16–32 °C; tune later |
+| Application | Simulated engine coolant loop (gasoline car), bench rig, uncontrollable heater, boards "in the engine bay" |
+| Setpoint range | Limits 30–95 °C, demo setpoint 60–70 °C, loop kept ≤ 80 °C (YF-B7 rating) |
+| NTC | Believed 50 kΩ / B3950; measure at room temperature before B4. Keep R19 = 22 kΩ if confirmed |
 | Pairing | No buttons: master permits join 180 s at boot and on `PERMIT_JOIN` from the app; slaves auto-join with backoff; factory reset = chip erase over ST-LINK |
 | ESP32 ⇄ app | ESP32 SoftAP + WebSocket, JSON mirroring the UART frame types |
-| Fail-safe (minimum) | NTC out of range → fault, fan 100 %, report now. Lost parent → keep PID on last setpoint, rejoin with backoff. No flow > 5 s → fault + report. IWDG out of scope |
+| Fail-safe (minimum) | NTC out of range → fault, fan 100 %, report now. Loop ≥ 80 °C (`FK_OVERTEMP_C`) → `OVERTEMP` fault, fan 100 %, report now, app alarm. Lost parent → keep PID on last setpoint, rejoin with backoff. No flow > 5 s → fault + report. IWDG out of scope |
 | PID | Decide at B6; default: own PI in `common/pid.c` |
 | UART instances | Debug VCP = USART1 (PB12/PA8); ESP32 link = USART2 (PA12/PA11) |

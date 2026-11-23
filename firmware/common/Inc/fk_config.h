@@ -1,0 +1,25 @@
+#ifndef FK_CONFIG_H
+#define FK_CONFIG_H
+
+/* TASKS */
+// ZbAppTask
+#define FK_ZB_APP_TASK_PRIO 24U
+#define FK_ZB_APP_TASK_STACK_BYTES 3072U
+
+// SupervisorTask
+#define FK_SUPERVISOR_TASK_PRIO 16U
+#define FK_SUPERVISOR_TASK_STACK_BYTES 1280U
+
+// Bridge Task
+#define FK_BRIDGE_TASK_PRIO 20U
+#define FK_BRIDGE_TASK_STACK_BYTES 1536U
+
+/* TIMING */
+#define FK_LED_BLINK_MS 500U
+#define FK_DIAG_PERIOD_MS 10000U
+
+/* GENERAL */
+// Max Slaves
+#define FK_MAX_SLAVES 2U
+
+#endif /*FK_CONFIG_H*/
