@@ -413,34 +413,111 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
 
     AppZbCommand command;
 
-    /* Esperar la autorización de inicio. */
-    osSemaphoreAcquire(NwkFormStartSemaphore, osWaitForever);
+    /* Esperar la autorizacion de inicio. */
+    osSemaphoreAcquire(
+        NwkFormStartSemaphore,
+        osWaitForever);
 
-    /* Formar la red o unirse; incluye los reintentos existentes. */
+    /* Formar la red o unirse. */
     APP_ZIGBEE_NwkFormOrJoin();
 
-    /* Después del inicio, atender comandos de aplicación. */
     for (;;)
     {
-        if (xQueueReceive(qZbCommand,
-                          &command,
-                          portMAX_DELAY) != pdPASS)
+#if APP_IS_SLAVE
+        const TickType_t waitTicks =
+            pdMS_TO_TICKS(2000U);
+#else
+        const TickType_t waitTicks =
+            portMAX_DELAY;
+#endif
+
+        BaseType_t received =
+            xQueueReceive(
+                qZbCommand,
+                &command,
+                waitTicks);
+
+#if APP_IS_SLAVE
+        APP_ZIGBEE_UpdateTemperature();
+#endif
+
+        if (received != pdPASS)
         {
             continue;
         }
 
 #if APP_IS_MASTER
+
         if ((command.type == APP_ZB_COMMAND_PERMIT_JOIN) &&
             (command.permit_seconds <= 254U))
         {
-            APP_ZIGBEE_PermitJoin(command.permit_seconds);
+            APP_ZIGBEE_PermitJoin(
+                command.permit_seconds);
+        }
+        else if (
+            command.type == APP_ZB_COMMAND_CONFIG_TEMP_REPORT)
+        {
+            uint8_t nodeId =
+                AppIpc_RegisterSlave(
+                    command.ieee_address);
+
+            if (nodeId == APP_NODE_UNASSIGNED)
+            {
+                LOG_ERROR_APP(
+                    "Could not register Slave");
+            }
+            else
+            {
+                LOG_INFO_APP(
+                    "Slave %u registered: IEEE "
+                    LOG_DISPLAY64(),
+                    (unsigned int)nodeId,
+                    LOG_NUMBER64(command.ieee_address));
+
+                APP_ZIGBEE_ConfigureTemperatureReports(
+                    command.short_address);
+            }
+        }
+        else if (
+            command.type == APP_ZB_COMMAND_TEMP_RECEIVED)
+        {
+            uint64_t ieee = command.ieee_address;
+
+            if ((ieee == 0U) &&
+                (command.short_address < 0xFFF8U))
+            {
+                ieee = ZbNwkAddrLookupExt(
+                    stZigbeeAppInfo.pstZigbee,
+                    command.short_address);
+            }
+
+            if (!AppIpc_SaveSlaveTemperature(
+                    ieee,
+                    command.temperature_centi_c,
+                    command.temperature_valid))
+            {
+                LOG_ERROR_APP(
+                    "Could not save Slave temperature");
+            }
+            else
+            {
+                LOG_INFO_APP(
+                    "Slave temperature saved: valid=%u, centi-C=%d",
+                    (unsigned int)command.temperature_valid,
+                    (int)command.temperature_centi_c);
+            }
         }
         else
         {
-            LOG_INFO_APP("Unsupported Zigbee command");
+            LOG_INFO_APP(
+                "Unsupported Zigbee command");
         }
+
 #else
-        LOG_INFO_APP("Zigbee command not supported by Slave");
+
+        LOG_INFO_APP(
+            "Zigbee command not supported by Slave");
+
 #endif
     }
 }

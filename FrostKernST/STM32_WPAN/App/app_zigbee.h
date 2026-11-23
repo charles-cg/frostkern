@@ -60,8 +60,9 @@ typedef struct ZigbeeAppInfoT
   uint32_t              lPersistNumWrites;
   uint32_t              lJoinDelay;
   uint64_t              dlExtendedAddress;
-  /* USER CODE BEGIN ZigbeeAppInfo_t */
 
+  /* USER CODE BEGIN ZigbeeAppInfo_t */
+  struct ZbZclClusterT *temperatureCluster;
   /* USER CODE END ZigbeeAppInfo_t */
 
   struct ZbZclClusterT  * pstZbCluster[CLUSTER_NB_MAX];
@@ -112,7 +113,8 @@ extern void       APP_ZIGBEE_Error                        ( uint32_t ErrId, uint
 extern void       APP_ZIGBEE_SerialCommandInstallCode     ( uint8_t * pRxBuffer, uint16_t iRxBufferSize );
 
 /* USER CODE BEGIN EFP */
-
+void APP_ZIGBEE_UpdateTemperature(void);
+void APP_ZIGBEE_ConfigureTemperatureReports(uint16_t shortAddress);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

@@ -27,12 +27,20 @@
 #define APP_EVENT_MODE_CHANGE     (1UL << 3)
 #define APP_EVENT_NETWORK_STARTED (1UL << 4)
 #define APP_ZB_COMMAND_PERMIT_JOIN 1U
+#define APP_ZB_COMMAND_CONFIG_TEMP_REPORT 2U
+#define APP_ZB_COMMAND_TEMP_RECEIVED 3U
 
 /* Comando de BridgeTask hacia ZbAppTask */
-typedef struct {
+typedef struct
+{
     uint8_t type;
     uint8_t seq;
     uint8_t permit_seconds;
+
+    uint16_t short_address;
+    uint64_t ieee_address;
+    int16_t temperature_centi_c;
+    bool temperature_valid;
 } AppZbCommand;
 
 /* Objetos presentes en ambos roles */
@@ -70,4 +78,15 @@ bool AppIpc_NetworkStarted(void);
 void AppIpc_MarkNetworkStarted(void);
 
 bool AppIpc_RequestPermitJoin(uint8_t seconds, uint8_t seq);
+
+bool AppIpc_RequestTemperatureReports(
+    uint16_t short_address,
+    uint64_t ieee_address);
+
+uint8_t AppIpc_RegisterSlave(uint64_t ieee);
+
+bool AppIpc_SaveSlaveTemperature(
+    uint64_t ieee,
+    int16_t temperature,
+    bool valid);
 #endif

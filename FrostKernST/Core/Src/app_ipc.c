@@ -266,3 +266,167 @@ bool AppIpc_RequestPermitJoin(uint8_t seconds, uint8_t seq)
 
 #endif
 }
+
+bool AppIpc_RequestTemperatureReports(
+    uint16_t short_address,
+    uint64_t ieee_address)
+{
+#if APP_IS_MASTER
+    if (qZbCommand == NULL || short_address >= 0xFFF8U)
+    {
+        return false;
+    }
+
+    AppZbCommand command = {0};
+
+    command.type = APP_ZB_COMMAND_CONFIG_TEMP_REPORT;
+    command.short_address = short_address;
+    command.ieee_address = ieee_address;
+
+    return xQueueSend(qZbCommand, &command, 0) == pdPASS;
+#else
+    (void)short_address;
+    (void)ieee_address;
+
+    return false;
+#endif
+}
+
+uint8_t AppIpc_RegisterSlave(uint64_t ieee)
+{
+#if APP_IS_MASTER
+
+    if ((ieee == 0U) ||
+        (ieee == UINT64_MAX) ||
+        (gStatusMutex == NULL))
+    {
+        return APP_NODE_UNASSIGNED;
+    }
+
+    uint8_t address[8];
+    const uint8_t emptyAddress[8] = {0};
+
+    for (uint8_t i = 0U; i < 8U; ++i)
+    {
+        address[i] =
+            (uint8_t)(ieee >> (56U - 8U * i));
+    }
+
+    if (xSemaphoreTake(
+            gStatusMutex,
+            pdMS_TO_TICKS(20U)) != pdTRUE)
+    {
+        return APP_NODE_UNASSIGNED;
+    }
+
+    uint8_t nodeId = APP_NODE_UNASSIGNED;
+    uint8_t freeSlot = APP_SLAVE_COUNT;
+
+    for (uint8_t i = 0U; i < APP_SLAVE_COUNT; ++i)
+    {
+        AppStatus *entry = &gSlaveStatus[i];
+
+        if (memcmp(
+                entry->device.ieee_address,
+                address,
+                sizeof(address)) == 0)
+        {
+            nodeId = (uint8_t)(i + 1U);
+            break;
+        }
+
+        if ((freeSlot == APP_SLAVE_COUNT) &&
+            (memcmp(
+                entry->device.ieee_address,
+                emptyAddress,
+                sizeof(emptyAddress)) == 0))
+        {
+            freeSlot = i;
+        }
+    }
+
+    if ((nodeId == APP_NODE_UNASSIGNED) &&
+        (freeSlot < APP_SLAVE_COUNT))
+    {
+        AppStatus *entry = &gSlaveStatus[freeSlot];
+
+        nodeId = (uint8_t)(freeSlot + 1U);
+
+        entry->device.role = APP_DEVICE_ROLE_SLAVE;
+        entry->device.node_id = nodeId;
+
+        memcpy(
+            entry->device.ieee_address,
+            address,
+            sizeof(address));
+
+        entry->latest_sample.source_node_id = nodeId;
+    }
+
+    xSemaphoreGive(gStatusMutex);
+
+    return nodeId;
+
+#else
+
+    (void)ieee;
+    return APP_NODE_UNASSIGNED;
+
+#endif
+}
+
+bool AppIpc_SaveSlaveTemperature(
+    uint64_t ieee,
+    int16_t temperature,
+    bool valid)
+{
+#if APP_IS_MASTER
+
+    uint8_t nodeId = AppIpc_RegisterSlave(ieee);
+
+    if (nodeId == APP_NODE_UNASSIGNED)
+    {
+        return false;
+    }
+
+    if (xSemaphoreTake(
+            gStatusMutex,
+            pdMS_TO_TICKS(20U)) != pdTRUE)
+    {
+        return false;
+    }
+
+    AppStatus *entry = &gSlaveStatus[nodeId - 1U];
+
+    if (valid)
+    {
+        entry->latest_sample.temperature_centi_c =
+            temperature;
+
+        entry->latest_sample.valid |=
+            APP_SAMPLE_VALID_TEMP;
+    }
+    else
+    {
+        entry->latest_sample.valid &=
+            ~APP_SAMPLE_VALID_TEMP;
+    }
+
+    entry->updated_at_ms =
+        (uint32_t)xTaskGetTickCount() *
+        (uint32_t)portTICK_PERIOD_MS;
+
+    xSemaphoreGive(gStatusMutex);
+
+    return true;
+
+#else
+
+    (void)ieee;
+    (void)temperature;
+    (void)valid;
+
+    return false;
+
+#endif
+}
