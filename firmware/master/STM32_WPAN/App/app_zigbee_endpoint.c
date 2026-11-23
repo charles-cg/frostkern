@@ -28,6 +28,7 @@
 #include "app_zigbee.h"
 #include "dbg_trace.h"
 #include "ieee802154_enums.h"
+#include "log_module_conf.h"
 #include "mcp_enums.h"
 
 #include "stm32_lpm.h"
@@ -140,12 +141,25 @@ void APP_ZIGBEE_ApplicationStart( void )
 {
   /* USER CODE BEGIN APP_ZIGBEE_ApplicationStart */
   /* Start OnOff Client */
+
   APP_ZIGBEE_OnOffClientStart();
 
   /* Display Short Address */
   LOG_INFO_APP( "Use Short Address : 0x%04X", ZbShortAddress( stZigbeeAppInfo.pstZigbee ) );
   LOG_INFO_APP( "%s ready to work !", APP_ZIGBEE_APPLICATION_NAME );
 
+  APP_ZIGBEE_PermitJoin(180);
+
+  uint16_t fkPanId = 0;
+  enum ZbStatusCodeT fkPanStatus;
+
+  fkPanStatus = ZbNwkGet(stZigbeeAppInfo.pstZigbee, ZB_NWK_NIB_ID_PanId, &fkPanId, sizeof(fkPanId));
+  
+  if (fkPanStatus == ZB_STATUS_SUCCESS) {
+    LOG_INFO_APP("Zigbee PAN ID: 0x%04X", fkPanId);
+  } else {
+    LOG_ERROR_APP("Error: Could not obtain PAN ID (0x%02X)", fkPanStatus);
+  }
   /* USER CODE END APP_ZIGBEE_ApplicationStart */
 
 #if ( CFG_LPM_LEVEL != 0)
@@ -251,7 +265,11 @@ void APP_ZIGBEE_SetNewDevice( uint16_t iShortAddress, uint64_t dlExtendedAddress
   LOG_INFO_APP( "New Device (%d) on Network : with Extended ( " LOG_DISPLAY64() " ) and Short ( 0x%04X ) Address.", cCapability, LOG_NUMBER64( dlExtendedAddress ), iShortAddress );
 
   /* USER CODE BEGIN APP_ZIGBEE_SetNewDevice */
-
+  if ((cCapability & MCP_ASSOC_CAP_RXONIDLE) != 0U) {
+    LOG_WARNING_APP("End device 0x%04X is set as non sleepy!", iShortAddress);
+  } else {
+    LOG_INFO_APP("End device 0x%04X set as sleepy", iShortAddress);
+  }
   /* USER CODE END APP_ZIGBEE_SetNewDevice */
 }
 
