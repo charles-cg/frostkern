@@ -44,15 +44,17 @@
 #include "zcl/general/zcl.onoff.h"
 
 /* USER CODE BEGIN PI */
+#include "app_network_config.h"
+#include "app_ipc.h"
 
 /* USER CODE END PI */
 
 /* Private defines -----------------------------------------------------------*/
-#define APP_ZIGBEE_CHANNEL                14u
+#define APP_ZIGBEE_CHANNEL                APP_NETWORK_CHANNEL
 #define APP_ZIGBEE_CHANNEL_MASK           ( 1u << APP_ZIGBEE_CHANNEL )
 #define APP_ZIGBEE_TX_POWER               ((int8_t) 0)    /* TX-Power is at 0 dBm by default. */
 
-#define APP_ZIGBEE_ENDPOINT               17u
+#define APP_ZIGBEE_ENDPOINT               APP_NETWORK_ENDPOINT
 #define APP_ZIGBEE_PROFILE_ID             ZCL_PROFILE_HOME_AUTOMATION
 #define APP_ZIGBEE_DEVICE_ID              ZCL_DEVICE_ONOFF_LIGHT
 #define APP_ZIGBEE_GROUP_ADDRESS          0x0001u
@@ -120,6 +122,12 @@ void APP_ZIGBEE_ApplicationInit(void)
   stZigbeeAppInfo.bNwkStartup = true;
 
   /* USER CODE BEGIN APP_ZIGBEE_ApplicationInit */
+#if APP_IS_MASTER
+  stZigbeeAppInfo.eStartupControl = ZbStartTypeForm;
+#else
+  stZigbeeAppInfo.eStartupControl = ZbStartTypeJoin;
+#endif
+  LOG_INFO_APP( "FrostKern role: %s", APP_NETWORK_ROLE_NAME );
 
   /* USER CODE END APP_ZIGBEE_ApplicationInit */
 
@@ -135,6 +143,14 @@ void APP_ZIGBEE_ApplicationInit(void)
 void APP_ZIGBEE_ApplicationStart( void )
 {
   /* USER CODE BEGIN APP_ZIGBEE_ApplicationStart */
+	AppIpc_SetDeviceIeee(ZbExtendedAddress(stZigbeeAppInfo.pstZigbee));
+	AppIpc_MarkNetworkStarted();
+  LOG_INFO_APP( "FrostKern network ready: %s, short address 0x%04X",
+                APP_NETWORK_ROLE_NAME, ZbShortAddress( stZigbeeAppInfo.pstZigbee ) );
+#if APP_IS_MASTER && APP_NETWORK_OPEN_JOIN_ON_BOOT
+  APP_ZIGBEE_PermitJoin( APP_NETWORK_PERMIT_JOIN_SECONDS );
+  LOG_INFO_APP( "Bring-up join window: %u seconds", APP_NETWORK_PERMIT_JOIN_SECONDS );
+#endif
 
   /* USER CODE END APP_ZIGBEE_ApplicationStart */
 
@@ -187,6 +203,9 @@ void APP_ZIGBEE_ConfigEndpoints(void)
  */
 bool APP_ZIGBEE_ConfigGroupAddr( void )
 {
+#if APP_IS_SLAVE
+  return false;
+#else
   struct ZbApsmeAddGroupReqT  stRequest;
   struct ZbApsmeAddGroupConfT stConfig;
 
@@ -197,6 +216,7 @@ bool APP_ZIGBEE_ConfigGroupAddr( void )
   ZbApsmeAddGroupReq( stZigbeeAppInfo.pstZigbee, &stRequest, &stConfig );
 
   return true;
+#endif
 }
 
 /**
@@ -226,6 +246,18 @@ void APP_ZIGBEE_GetStartupConfig( struct ZbStartupT * pstConfig )
   }
 
   /* USER CODE BEGIN APP_ZIGBEE_GetStartupConfig */
+#if APP_IS_SLAVE
+  /* Mismo patron que Zigbee_TempMeas_Server_SED v1.10.0; ademas
+   * anunciamos alimentacion por bateria. RX apagada cuando esta inactivo.
+   * Esto configura el rol de radio, no habilita Stop 1 de la CPU.
+   */
+  pstConfig->capability &= (uint8_t) ~( MCP_ASSOC_CAP_RXONIDLE |
+      MCP_ASSOC_CAP_DEV_TYPE | MCP_ASSOC_CAP_ALT_COORD | MCP_ASSOC_CAP_PWR_SRC );
+  pstConfig->endDeviceTimeout = APP_NETWORK_SED_TIMEOUT_CODE;
+#else
+  pstConfig->capability |= MCP_ASSOC_CAP_RXONIDLE |
+      MCP_ASSOC_CAP_DEV_TYPE | MCP_ASSOC_CAP_PWR_SRC;
+#endif
 
   /* USER CODE END APP_ZIGBEE_GetStartupConfig */
 }
@@ -254,7 +286,7 @@ void APP_ZIGBEE_SetNewDevice( uint16_t iShortAddress, uint64_t dlExtendedAddress
 void APP_ZIGBEE_PrintApplicationInfo(void)
 {
   LOG_INFO_APP( "**********************************************************" );
-  LOG_INFO_APP( "Network config : CENTRALIZED COORDINATOR" );
+  LOG_INFO_APP( "Network config : %s", APP_NETWORK_ROLE_NAME );
 
   /* USER CODE BEGIN APP_ZIGBEE_PrintApplicationInfo1 */
 

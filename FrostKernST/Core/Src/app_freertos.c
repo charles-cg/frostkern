@@ -22,7 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "app_ipc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -82,7 +82,7 @@ __weak void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
-
+	AppIpc_Init();
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
