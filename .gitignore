@@ -1,0 +1,5 @@
+# Firmware build output (CubeMX CMake projects and ESP-IDF projects)
+firmware/**/build/
+
+# macOS
+.DS_Store

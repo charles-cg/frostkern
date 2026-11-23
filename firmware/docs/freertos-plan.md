@@ -1,8 +1,15 @@
 # Frostkern firmware — FreeRTOS runtime design
 
-Status: agreed design, v1 (2026-11-10). Human-readable version: `freertos-plan.html`.
+Status: agreed design, v2 (2026-11-19). v1 was 2026-11-10. Schedule and session decisions: `roadmap.md`. `freertos-plan.html` still shows v1.
 
 ## 1. System overview
+
+Target vehicle: gasoline (combustion-engine) car, not an EV (decided 2026-11-21). Each slave's loop is a **simulation of an engine coolant loop**, with the slave board placed as if in the engine bay. Consequences:
+- Demo rig: a bench rig with a heater that is **not controllable** (always on when plugged in). Loop kept at **≤ 80 °C**; demo setpoint **60–70 °C**; slave sets `AbsMinCoolSetpointLimit` / `AbsMaxCoolSetpointLimit` to **30 °C / 95 °C** (replacing the cluster's default 16–32 °C).
+- The YF-B7 is rated for water up to 80 °C by some sources and 100 °C by others; no manufacturer datasheet confirmed, hence the 80 °C loop limit.
+- NTC divider: R19 = 22 kΩ from `NTC_BIAS` (PB15) to `NTC_DIV`, NTC from `NTC_DIV` to GND. NTC believed to be **50 kΩ / B3950** (YF-B7 built-in type), not yet verified: measure it at room temperature before B4 (≈50 kΩ at 25 °C). At 90 °C this gives ~0.58 V and ~12 ADC counts/°C (12-bit), which is enough. If it turns out to be 10 kΩ, change R19 to ~1.5–2.2 kΩ.
+- A real engine bay (100–120 °C) exceeds alkaline AA ratings (~55–60 °C). Fine for the bench rig; a real install needs a different power source.
+- With a combustion engine, 12 V rises to ~13.8–14.4 V while the alternator charges, which makes engine-running detection (open question 3) a simple voltage threshold.
 
 | Board | Count | Zigbee role | Power | Sleeps? |
 |---|---|---|---|---|
@@ -10,9 +17,9 @@ Status: agreed design, v1 (2026-11-10). Human-readable version: `freertos-plan.h
 | Slave | 2 | Sleepy End Device (SED) | 4×AA → TPS70933 LDO 3.3 V; TPS63070 buck-boost 5 V on demand | Yes (Stop 1 / Sleep) |
 
 - All three boards are the same PCB (`wba55_v1`), STM32WBA55CGU6.
-- One codebase, one CubeIDE project, two build configurations: `ROLE_MASTER`, `ROLE_SLAVE`. The role selects which application tasks are created and which Zigbee stack library (FFD for master, RFD for slaves) is linked.
-- Master: XIAO ESP32 add-on is a Wi-Fi bridge to `frostkernApp` over UART. ESP32 supply is switched by `ESP32_EN` (TPS22918).
-- Slave: 1 NTC, 1 YF-B7 flow sensor. Fan (PC fan) and pump run from an external supply, switched by MOSFETs driven by the slave. Pump is on/off.
+- Two CubeMX projects built with CMake in VS Code (not CubeIDE): `firmware/master` (Coordinator, FFD) and `firmware/slave` (Sleepy End Device, RFD), plus shared code in `firmware/common`. The Zigbee role is set in each `.ioc` (`ZGB_DEVICE_ROLE`, `ZGB_APPLICATION`, `ZGB_SLEEPY_MODE`, `CFG_LPM_LEVEL`) and drives generated code and linked libs, so one `.ioc` cannot produce both roles.
+- Master: XIAO ESP32 add-on is a Wi-Fi bridge to `frostkernApp` over UART. ESP32 supply is switched by `ESP32_EN` (TPS22918). The ESP32 runs a SoftAP + WebSocket server; the phone connects to it directly (no router or internet in the car).
+- Slave: 1 NTC, 1 YF-B7 flow sensor. Fan (PC fan) runs from an external supply, switched by a MOSFET driven by the slave. The pump is always on and not controlled by the MCU.
 - Control is local to each slave (PID). The master only sends the setpoint and collects telemetry.
 
 ## 2. Pin map (from `wba55_v1.kicad_pcb`)
@@ -20,7 +27,7 @@ Status: agreed design, v1 (2026-11-10). Human-readable version: `freertos-plan.h
 | Signal | Pin | Use | Notes |
 |---|---|---|---|
 | PWM1 | PA1 | Fan MOSFET | LPTIM2_CH2 (AF13) — only PWM pin with a low-power timer |
-| PWM2 | PA2 | Pump MOSFET | Plain GPIO on/off |
+| PWM2 | PA2 | Pump MOSFET | Unused in v1 (pump always on); configure as analog |
 | PWM3 | PA10 | Spare | TIM3_CH1 |
 | YFB7_DIV | PA0 | Flow pulses | LPTIM1_IN1 (AF0); counts in Stop 1 |
 | NTC_DIV | PA5 | NTC divider | ADC4_IN4 |
@@ -29,12 +36,12 @@ Status: agreed design, v1 (2026-11-10). Human-readable version: `freertos-plan.h
 | YFB7_EN | PB6 | YF-B7 load switch | |
 | BOOST_EN | PB5 | 5 V buck-boost enable | YF-B7 needs 5 V |
 | ESP32_EN | PB7 | ESP32 load switch | Master only |
-| WBA_TX / WBA_RX | PA12 / PA11 | UART to ESP32 | Master only; confirm USART instance in CubeMX |
+| WBA_TX / WBA_RX | PA12 / PA11 | UART to ESP32 | Master only; USART2 |
 | IRQ | PA9 | ESP32 interrupt line | Master only |
-| PAIR_BTN | PA7 | Button | Master: permit join. Slave: hold 5 s = leave + factory reset |
+| PAIR_BTN | PA7 | Button | Not fitted (footprint error). Pairing is done from the app; factory reset = chip erase over ST-LINK |
 | LD1 | PB4 | Status LED | |
 | SCL / SDA | PB2 / PB1 | I2C header | Unused in v1 |
-| VCP1_TX / RX | PB12 / PA8 | Debug UART | |
+| VCP1_TX / RX | PB12 / PA8 | Debug UART | USART1, through the STLINK-V3MINIE VCP |
 
 ## 3. FreeRTOS configuration (bare bones)
 
@@ -69,11 +76,11 @@ Priorities and stacks are first estimates.
 
 | Role | Task | Job | Prio | Stack (B) | Runs when |
 |---|---|---|---|---|---|
-| Slave | `ControlTask` | PID → fan duty (LPTIM2 PWM); owns pump output | 32 | 1024 | New sample or config change |
+| Slave | `ControlTask` | PID → fan duty (LPTIM2 PWM) | 32 | 1024 | New sample or config change |
 | Slave | `SensorTask` | NTC bias + ADC → °C; LPTIM1 count → flow; battery ADC | 28 | 1024 | Every 2 s (Active) / 30 s (Idle) |
 | Both | `ZbAppTask` | Network form/join, clusters, reporting, setpoint writes | 24 | 3072 | Stack callbacks, events, poll timer |
 | Master | `BridgeTask` | Binary UART frames to/from ESP32; ESP32 power gating | 20 | 1536 | UART RX, events |
-| Both | `SupervisorTask` | Watchdog check-ins, battery state, faults, LED, button | 16 | 768 | Periodic; policy TBD |
+| Both | `SupervisorTask` | Battery state, faults, LED (watchdog check-ins after the demo) | 16 | 768 | Periodic |
 
 ## 5. Inter-task communication
 
@@ -82,15 +89,15 @@ Priorities and stacks are first estimates.
 | `qSample` | Queue, length 1, `xQueueOverwrite` | Sensor → Control | Latest reading (temp, flow, battery, timestamp) |
 | `gStatus` | Struct + mutex | Sensor, Control → ZbApp, Bridge, Supervisor | Latest measurements, fan duty, mode, faults |
 | `qConfig` | Queue | ZbApp → Control | New setpoint |
-| `evSystem` | Event group | Any → Any | `EV_FAULT`, `EV_BUTTON`, `EV_REPORT_NOW`, `EV_MODE_CHANGE`, watchdog check-in bits |
+| `evSystem` | Event group | Any → Any | `EV_FAULT`, `EV_PERMIT_JOIN` (master), `EV_REPORT_NOW`, `EV_MODE_CHANGE`; watchdog check-in bits after the demo |
 
 ISRs use only `FromISR` calls, at NVIC priority ≥ 5.
 
 ## 6. Zigbee stack and interrupt rules
 
 - Stack: Exegin Zigbee R23, precompiled libraries (`ZigBeeProR23_FFD.a` master, `ZigBeeProR23_RFD.a` slaves, `ZigBeeClusters.a`).
-- Reference examples: `Zigbee_OnOff_Server_Coord_FreeRtos` (master), `Zigbee_OnOff_Client_Router_FreeRtos` (FreeRTOS structure). There is no FreeRTOS SED example; take SED settings from `Zigbee_TempMeas_Server_SED` / `Zigbee_PowerConfig_Server_SED`.
-- Radio IRQ priorities from ST's `app_conf.h`: RADIO_INTR_PRIO_HIGH 5, RADIO_INTR_PRIO_LOW 7, RADIO_SW_LOW 14, RCC 1. Our peripheral IRQs that call FreeRTOS: 6–13.
+- Project bases: master = copy of `Zigbee_OnOff_Server_Coord_FreeRtos`. Slave = copy of `Zigbee_OnOff_Client_Router_FreeRtos` (FreeRTOS structure), switched in CubeMX to END_DEVICE / RFD / sleepy ON. There is no FreeRTOS SED example; take SED settings from `Zigbee_OnOff_Client_SED` / `Zigbee_PowerConfig_Server_SED`.
+- Radio IRQ priorities from ST's `app_conf.h` (coordinator example): RADIO_INTR_PRIO_HIGH 5, RADIO_INTR_PRIO_LOW 7, RADIO_SW_LOW 14, RCC 1. The SED example sets RADIO_INTR_PRIO_LOW 5; check the slave's generated value. Our peripheral IRQs that call FreeRTOS: 6–13.
 - Never call Zigbee APIs from ISRs or from tasks other than `ZbAppTask`.
 
 ## 7. Low-power strategy (slaves)
@@ -102,10 +109,15 @@ ISRs use only `FromISR` calls, at NVIC priority ≥ 5.
 | Report to master | every 60 s, or Δtemp > 0.5 °C, or fault | every 5 min, or change, or fault |
 | Parent poll | every 10 s | every 60 s |
 | Sleep depth | Stop 1 if LPTIM2 PWM survives Stop 1, else Sleep while fan runs | Stop 1 |
+| 5 V boost + YF-B7 | On continuously | Off, except a 2 s flow window every 5 min |
+| NTC bias | Pulsed per sample | Pulsed per sample |
 
 All numbers are `#define`s in one config header.
 
+Real battery savings are a demo requirement. During development the slave runs with `CFG_LPM_LEVEL` 0 (debugger stays attached); Stop 1 is proven in a spike right after the SED joins and enabled for good at the end (see `roadmap.md`).
+
 Hardware facts:
+- Board erratum (`wba55_v1`): the 32.768 kHz LSE crystal does not start at ST's default drive (MediumLow). It starts at `RCC_LSEDRIVE_HIGH`, set in both `.ioc` files. Likely the 6 pF load caps don't match the crystal's CL; check the crystal datasheet for v2.
 - WBA55 has Stop 0, Stop 1 and Standby only (no Stop 2).
 - LPTIM1 pulse counting on PA0 works in Stop 1 (ST example `LPTIM_PulseCounter`, NUCLEO-WBA55CG).
 - TIM1/2/3/16/17 stop in Stop mode.
@@ -117,13 +129,12 @@ Hardware facts:
 | Cluster | ID | Key attributes | Notes |
 |---|---|---|---|
 | Temperature Measurement | 0x0402 | MeasuredValue (int16, 0.01 °C) | Shipped by ST |
-| Flow Measurement | 0x0404 | MeasuredValue (uint16, 0.1 m³/h), Min, Max | Built by us with the generic ZCL API (`ZbZclClusterAlloc`, `ZbZclAttrAppendList`, `ZbZclClusterAttach`) |
-| Fan Control | 0x0202 | FanMode (enum off/low/med/high/on/auto) | Shipped by ST |
-| Thermostat | 0x0201 | OccupiedCoolingSetpoint (int16, 0.01 °C) | Master/app writes setpoint; confirm ST ships it |
+| Thermostat | 0x0201 | OccupiedCoolingSetpoint (int16, 0.01 °C) | Shipped by ST (`ZbZclThermServerAlloc`). Master/app writes setpoint. Default limits 16–32 °C, tune later |
 | Power Configuration | 0x0001 | BatteryVoltage (100 mV), BatteryPercentageRemaining | Shipped by ST |
+| Frostkern Status (manufacturer-specific) | 0xFC00 | Flow (uint16, 0.01 L/min), FanDuty (uint8, %), Mode (Idle/Active), FaultFlags (bitmap) | Built by us with the generic ZCL API (`ZbZclClusterAlloc`, `ZbZclAttrAppendList`, `ZbZclClusterAttach`) |
 
-- No manufacturer-specific cluster. PID gains are compile-time constants.
-- Pairing: app "Pair" or master button → master permits join for 180 s. An unpaired slave searches on its own with backoff (10 s → 1 min → 5 min cap). Slave button held 5 s → leave + factory reset. Network data persisted in flash. Security: Zigbee 3.0 default TC link key.
+- Flow Measurement (0x0404, 0.1 m³/h ≈ 1.7 L/min steps) and Fan Control (0x0202, FanMode enum only, no duty %) are not used; `0xFC00` replaces both. PID gains are compile-time constants.
+- Pairing: app "Pair" (`PERMIT_JOIN` frame) or master boot → master permits join for 180 s. An unpaired slave searches on its own with backoff (10 s → 1 min → 5 min cap). Factory reset = chip erase over ST-LINK (no buttons fitted). Network data persisted in flash. Security: Zigbee 3.0 default TC link key.
 
 ## 9. Master ↔ ESP32 UART frames (draft)
 
@@ -131,23 +142,29 @@ Hardware facts:
 
 | TYPE | Direction | Payload |
 |---|---|---|
-| `TELEMETRY` | WBA → ESP | slave id, temp, flow, FanMode, battery, mode, fault flags |
+| `TELEMETRY` | WBA → ESP | slave id, temp, flow, fan duty %, battery, mode, fault flags |
 | `SET_SETPOINT` | ESP → WBA | slave id (or all), setpoint 0.01 °C |
 | `PERMIT_JOIN` | ESP → WBA | duration s |
 | `DEVICE_JOINED` | WBA → ESP | slave id, IEEE address |
 | `ACK` / `NACK` | both | SEQ, error code |
 
-The ESP32 converts frames to whatever it uses towards the app (MQTT TBD).
+The ESP32 converts frames to JSON over a WebSocket on its own SoftAP. Frame format and JSON are frozen at the Nov 24 checkpoint.
 
-## 10. Open questions
+## 10. Fail-safe (minimum for v1)
 
-1. Fail-safe policy: sensor fault, comms loss, watchdog policy, pump on flow fault (partner).
-2. MQTT or another transport on the ESP32.
-3. Which PID library.
-4. Does LPTIM2 PWM on PA1 keep running in Stop 1? Test on hardware first.
-5. Engine-running detection (12 V level to ADC) for a future board revision.
-6. Install codes instead of the default TC link key.
-7. YF-B7 needs the 5 V boost + load switch: keep it powered all the time, or only in Active mode / short windows in Idle?
-8. Flow cluster resolution is 0.1 m³/h (≈1.7 L/min). Enough, or add a finer attribute?
-9. Fan Control (0x0202) has no duty-% attribute. Is FanMode enough at the master/app?
-10. Facts not checked against the datasheet / RM0493 (PDFs wouldn't load): LPTIM2 in Stop 1, ADC4 autonomy, Standby under FreeRTOS, whether ST ships the Thermostat cluster.
+- NTC reading out of range → fault flag, fan 100 %, report immediately.
+- Loop temperature ≥ 80 °C (`FK_OVERTEMP_C` in `fk_config.h`) → `OVERTEMP` fault flag, fan 100 %, report immediately; the app shows an alarm so the operator unplugs the heater (it is not MCU-controlled). Clears below the threshold minus a hysteresis.
+- Slave loses its parent → keep running PID on the last setpoint, rejoin with backoff.
+- No flow for > 5 s → fault flag + report (pump stays on; it is not MCU-controlled).
+- IWDG watchdog policy: after the demo.
+
+## 11. Open questions
+
+1. Which PID implementation: own PI in `common/pid.c` (default) or CMSIS-DSP `arm_pid_f32`. Decide at brick B6.
+2. Does LPTIM2 PWM on PA1 keep running in Stop 1? Test at B9; fallback is Sleep while the fan runs.
+3. Engine-running detection (12 V level to ADC) for a future board revision.
+4. Install codes instead of the default TC link key.
+5. Facts still not checked against RM0493: LPTIM2 in Stop 1, ADC4 autonomy, Standby under FreeRTOS.
+6. Setpoint range beyond the Thermostat default 16–32 °C.
+
+Resolved 2026-11-19: transport (SoftAP + WebSocket), YF-B7 power policy (§7), flow resolution and fan duty (`0xFC00`, §8), Thermostat shipped by ST, fail-safe minimum (§10), USART instances (§2).
