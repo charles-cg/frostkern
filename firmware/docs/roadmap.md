@@ -89,6 +89,7 @@ Examples live in `~/STM32Cube/Repository/STM32Cube_FW_WBA_V1.10.0/Projects/NUCLE
 | Application | Simulated engine coolant loop (gasoline car), bench rig, uncontrollable heater, boards "in the engine bay" |
 | Setpoint range | Limits 30–95 °C, demo setpoint 60–70 °C, loop kept ≤ 80 °C (YF-B7 rating) |
 | NTC | Believed 50 kΩ / B3950; measure at room temperature before B4. Keep R19 = 22 kΩ if confirmed |
+| Zigbee persistence | On for both boards (CubeMX `ZGB_PERSISTENCE`, ST's `*_Persist` examples): master keeps PAN and keys across reboots, slave restores and rejoins without permit-join. Stored in the last 24 KB of flash; chip erase clears it. Decided 2026-11-23 |
 | Pairing | No buttons: master permits join 180 s at boot and on `PERMIT_JOIN` from the app; slaves auto-join with backoff; factory reset = chip erase over ST-LINK |
 | ESP32 ⇄ app | ESP32 SoftAP + WebSocket, JSON mirroring the UART frame types |
 | Fail-safe (minimum) | NTC out of range → fault, fan 100 %, report now. Loop ≥ 80 °C (`FK_OVERTEMP_C`) → `OVERTEMP` fault, fan 100 %, report now, app alarm. Lost parent → keep PID on last setpoint, rejoin with backoff. No flow > 5 s → fault + report. IWDG out of scope |

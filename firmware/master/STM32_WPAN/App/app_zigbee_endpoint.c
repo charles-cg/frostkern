@@ -120,7 +120,7 @@ void APP_ZIGBEE_ApplicationInit(void)
 
   /* Configure Application Form/Join parameters : Startup, Persistence and Start with/without Form/Join */
   stZigbeeAppInfo.eStartupControl = ZbStartTypeForm;
-  stZigbeeAppInfo.bPersistNotification = false;
+  stZigbeeAppInfo.bPersistNotification = true;
   stZigbeeAppInfo.bNwkStartup = true;
 
   /* USER CODE BEGIN APP_ZIGBEE_ApplicationInit */

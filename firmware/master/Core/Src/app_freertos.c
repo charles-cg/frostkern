@@ -58,9 +58,10 @@ TaskHandle_t bridgeHandle;
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-    .name = "defaultTask",
-    .priority = (osPriority_t)osPriorityNormal,
-    .stack_size = 128 * 4};
+  .name = "defaultTask",
+  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 128 * 4
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -87,10 +88,10 @@ __weak void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime) {
 /* USER CODE END VPORT_SUPPORT_TICKS_AND_SLEEP */
 
 /**
- * @brief  FreeRTOS initialization
- * @param  None
- * @retval None
- */
+  * @brief  FreeRTOS initialization
+  * @param  None
+  * @retval None
+  */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
@@ -116,8 +117,7 @@ void MX_FREERTOS_Init(void) {
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
   /* creation of defaultTask */
-  defaultTaskHandle =
-      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -141,6 +141,7 @@ void MX_FREERTOS_Init(void) {
     Error_Handler();
   }
   /* USER CODE END RTOS_EVENTS */
+
 }
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
@@ -149,7 +150,8 @@ void MX_FREERTOS_Init(void) {
  * @retval None
  */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument) {
+void StartDefaultTask(void *argument)
+{
   /* USER CODE BEGIN defaultTask */
   /* Infinite loop */
   for (;;) {
@@ -196,3 +198,4 @@ static void BridgeTask(void *argument) {
   }
 }
 /* USER CODE END Application */
+
