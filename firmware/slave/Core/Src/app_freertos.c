@@ -1,20 +1,20 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * File Name          : app_freertos.c
-  * Description        : FreeRTOS applicative file
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * File Name          : app_freertos.c
+ * Description        : FreeRTOS applicative file
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -22,10 +22,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_common.h"
 #include "fk_config.h"
+#include "fk_rtos.h"
 #include "fk_types.h"
 #include "log_module.h"
 #include "main.h"
+#include "portmacrocommon.h"
+#include "projdefs.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,34 +51,35 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 static const char *volatile fk_overflowTask;
+EventGroupHandle_t fkEventHandle;
+TaskHandle_t linkTaskHandle;
+volatile enum ZbStatusCodeT fkRejoinStatus;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128 * 4
-};
+    .name = "defaultTask",
+    .priority = (osPriority_t)osPriorityNormal,
+    .stack_size = 128 * 4};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 static void SupervisorTask(void *argument);
+static void LinkTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 /* USER CODE BEGIN 4 */
-void vApplicationStackOverflowHook(xTaskHandle xTask, char *pcTaskName)
-{
-   /* Run time stack overflow checking is performed if
-   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
-   called if a stack overflow is detected. */
-   fk_overflowTask = pcTaskName;
-   Error_Handler();
+void vApplicationStackOverflowHook(xTaskHandle xTask, char *pcTaskName) {
+  /* Run time stack overflow checking is performed if
+  configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
+  called if a stack overflow is detected. */
+  fk_overflowTask = pcTaskName;
+  Error_Handler();
 }
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN VPORT_SUPPORT_TICKS_AND_SLEEP */
-__weak void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
-{
+__weak void vPortSuppressTicksAndSleep(TickType_t xExpectedIdleTime) {
   // Generated when configUSE_TICKLESS_IDLE == 2.
   // Function called in tasks.c (in portTASK_FUNCTION).
   // TO BE COMPLETED or TO BE REPLACED by a user one, overriding that weak one.
@@ -81,10 +87,10 @@ __weak void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
 /* USER CODE END VPORT_SUPPORT_TICKS_AND_SLEEP */
 
 /**
-  * @brief  FreeRTOS initialization
-  * @param  None
-  * @retval None
-  */
+ * @brief  FreeRTOS initialization
+ * @param  None
+ * @retval None
+ */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
@@ -106,7 +112,8 @@ void MX_FREERTOS_Init(void) {
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
   /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  defaultTaskHandle =
+      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -115,26 +122,33 @@ void MX_FREERTOS_Init(void) {
                   FK_SUPERVISOR_TASK_PRIO, NULL) != pdPASS) {
     Error_Handler();
   }
+
+  if (xTaskCreate(LinkTask, "LinkTask",
+                  FK_LINK_TASK_STACK_BYTES / sizeof(StackType_t), NULL,
+                  FK_LINK_TASK_PRIO, &linkTaskHandle) != pdPASS) {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
+  fkEventHandle = xEventGroupCreate();
+  if (fkEventHandle == NULL) {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_EVENTS */
-
 }
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
-* @brief Function implementing the defaultTask thread.
-* @param argument: Not used
-* @retval None
-*/
+ * @brief Function implementing the defaultTask thread.
+ * @param argument: Not used
+ * @retval None
+ */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
+void StartDefaultTask(void *argument) {
   /* USER CODE BEGIN defaultTask */
   /* Infinite loop */
-  for(;;)
-  {
+  for (;;) {
     osDelay(1);
   }
   /* USER CODE END defaultTask */
@@ -152,17 +166,28 @@ static void SupervisorTask(void *argument) {
     vTaskDelay(pdMS_TO_TICKS(FK_LED_BLINK_MS));
     TickType_t now = xTaskGetTickCount();
     if (now - lastLog >= pdMS_TO_TICKS(FK_DIAG_PERIOD_MS)) {
-      /*
-      UBaseType_t supFreeWords    = uxTaskGetStackHighWaterMark(NULL);
-      size_t      heapMinFree     = xPortGetMinimumEverFreeHeapSize();
+      UBaseType_t supFreeWords  = uxTaskGetStackHighWaterMark(NULL);
+      UBaseType_t linkFreeWords = uxTaskGetStackHighWaterMark(linkTaskHandle);
+      size_t      heapMinFree   = xPortGetMinimumEverFreeHeapSize();
 
-      LOG_INFO_APP("Diag: stack free sup=%u B, heap min free=%u B",
+      LOG_INFO_APP("Diag: stack free sup=%u B link=%u B, heap min free=%u B",
                    (unsigned)(supFreeWords * sizeof(StackType_t)),
+                   (unsigned)(linkFreeWords * sizeof(StackType_t)),
                    (unsigned)heapMinFree);
-      */
       lastLog = now;
     }
   }
 }
-/* USER CODE END Application */
 
+static void LinkTask(void *argument) {
+  (void)argument;
+
+  for (;;) {
+    EventBits_t bits = xEventGroupWaitBits(fkEventHandle, FK_EV_PARENT_LOST,
+                                           pdTRUE, pdFALSE, portMAX_DELAY);
+    if ((bits & FK_EV_PARENT_LOST) != 0U) {
+      LOG_INFO_APP("Link: parent lost");
+    }
+  }
+}
+/* USER CODE END Application */

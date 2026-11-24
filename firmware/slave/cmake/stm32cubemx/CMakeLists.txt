@@ -71,6 +71,7 @@ set(MX_Include_Dirs
 set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../STM32_WPAN/App/app_zigbee_endpoint.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../STM32_WPAN/App/app_zigbee.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../STM32_WPAN/App/app_zigbee_persistence_nvm.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../STM32_WPAN/App/app_zigbee_utility.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../STM32_WPAN/Target/power_table.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../STM32_WPAN/Target/linklayer_plat.c

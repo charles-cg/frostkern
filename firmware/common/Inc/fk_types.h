@@ -8,6 +8,8 @@
 #define FK_EV_PERMIT_JOIN (1U << 1)
 #define FK_EV_REPORT_NOW (1U << 2)
 #define FK_EV_MODE_CHANGE (1U << 3)
+#define FK_EV_PARENT_LOST (1U << 4)
+#define FK_EV_REJOIN_DONE (1U << 5)
 
 /* Fault Bits */
 #define FK_FAULT_OVERTEMP (1U << 0)

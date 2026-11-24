@@ -29,6 +29,16 @@ firmware/
 
 Examples live in `~/STM32Cube/Repository/STM32Cube_FW_WBA_V1.10.0/Projects/NUCLEO-WBA55CG/Applications/Zigbee/`.
 
+## Boards
+
+| Board | Zigbee role | IEEE (extended) address | Notes |
+|---|---|---|---|
+| Master | Coordinator (FFD) | `0x0080E1FFFE32FCE9` | LSE needs High drive |
+| Slave 1 | Sleepy End Device (RFD) | `0x0080E1FFFE32FC28` | LSE needs High drive |
+| Slave 2 | Sleepy End Device (RFD) | `0x0080E1FFFE32FC18` | LSE did not start even at High drive; fixed by reworking the LSE crystal circuit (2026-11-23) |
+
+The IEEE address is fixed per chip. Short addresses are assigned at join and can change on a full rejoin.
+
 ## Bricks
 
 | # | Date | Codebase | Work | Done when |

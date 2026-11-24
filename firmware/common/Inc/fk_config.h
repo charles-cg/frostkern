@@ -14,6 +14,10 @@
 #define FK_BRIDGE_TASK_PRIO 20U
 #define FK_BRIDGE_TASK_STACK_BYTES 1536U
 
+// Link Task
+#define FK_LINK_TASK_PRIO 20U
+#define FK_LINK_TASK_STACK_BYTES 1280U
+
 /* TIMING */
 #define FK_LED_BLINK_MS 500U
 #define FK_DIAG_PERIOD_MS 10000U
@@ -21,5 +25,9 @@
 /* GENERAL */
 // Max Slaves
 #define FK_MAX_SLAVES 2U
+
+// Rejoin 
+#define FK_REJOIN_BACKOFF_MIN_MS 1000U
+#define FK_REJOIN_BACKOFF_MAX_MS 60000U
 
 #endif /*FK_CONFIG_H*/

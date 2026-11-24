@@ -30,6 +30,7 @@
 #include "dbg_trace.h"
 #include "ieee802154_enums.h"
 #include "mcp_enums.h"
+#include "app_zigbee_persistence_nvm.h"
 
 #include "stm32_rtos.h"
 #include "stm32_timer.h"
@@ -334,6 +335,16 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
   {
     /* Application configure Startup */
     APP_ZIGBEE_GetStartupConfig( &stConfig );
+
+    /* Try to start Start Zigbee Stack with Persistence the first time */
+    if ( stZigbeeAppInfo.bPersistNotification != false )
+    {
+      if ( AppZbPersistence_Init( stZigbeeAppInfo.pstZigbee, &stConfig, APP_ZB_PERSISTENCE_TYPE_ENABLED ) == HAL_OK )
+      {
+        eStatus = ZB_STATUS_SUCCESS;
+      }
+      stZigbeeAppInfo.bPersistNotification = false;
+    }
 
     if ( eStatus != ZB_STATUS_SUCCESS )
     {

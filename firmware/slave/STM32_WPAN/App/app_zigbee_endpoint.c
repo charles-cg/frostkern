@@ -23,11 +23,13 @@
 
 #include "app_common.h"
 #include "app_conf.h"
+#include "fk_types.h"
 #include "log_module.h"
 #include "app_entry.h"
 #include "app_zigbee.h"
 #include "dbg_trace.h"
 #include "ieee802154_enums.h"
+#include "log_module_conf.h"
 #include "mcp_enums.h"
 
 #include "stm32_lpm.h"
@@ -35,6 +37,7 @@
 #include "stm32_timer.h"
 #include "stm32_lpm_if.h"
 
+#include "zigbee.filter.h"
 #include "zigbee.h"
 #include "zigbee.nwk.h"
 #include "zigbee.security.h"
@@ -45,7 +48,7 @@
 
 /* USER CODE BEGIN PI */
 #include "app_bsp.h"
-
+#include "fk_rtos.h"
 /* USER CODE END PI */
 
 /* Private defines -----------------------------------------------------------*/
@@ -86,7 +89,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+static struct ZbMsgFilterT* fkStackEventFilter = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,7 +97,7 @@
 /* USER CODE BEGIN PFP */
 static void APP_ZIGBEE_ApplicationTaskInit    ( void );
 static void APP_ZIGBEE_OnOffClientStart       ( void );
-
+static enum zb_msg_filter_rc fkStackEventCallback( struct ZigBeeT * zb, uint32_t lId, void * pMessage, void * arg );
 /* USER CODE END PFP */
 
 /* Functions Definition ------------------------------------------------------*/
@@ -113,7 +116,7 @@ void APP_ZIGBEE_ApplicationInit(void)
 
   /* Configure Application Form/Join parameters : Startup, Persistence and Start with/without Form/Join */
   stZigbeeAppInfo.eStartupControl = ZbStartTypeJoin;
-  stZigbeeAppInfo.bPersistNotification = false;
+  stZigbeeAppInfo.bPersistNotification = true;
   stZigbeeAppInfo.bNwkStartup = true;
 
   /* USER CODE BEGIN APP_ZIGBEE_ApplicationInit */
@@ -141,7 +144,15 @@ void APP_ZIGBEE_ApplicationStart( void )
   /* Display Short Address */
   LOG_INFO_APP( "Use Short Address : 0x%04X", ZbShortAddress( stZigbeeAppInfo.pstZigbee ) );
   LOG_INFO_APP( "%s ready to work !", APP_ZIGBEE_APPLICATION_NAME );
-
+  
+  if (fkStackEventFilter == NULL) {
+    fkStackEventFilter = ZbMsgFilterRegister(stZigbeeAppInfo.pstZigbee, ZB_MSG_FILTER_STACK_EVENT, ZB_MSG_DEFAULT_PRIO, fkStackEventCallback, NULL);
+    if (fkStackEventFilter == NULL) {
+      LOG_ERROR_APP("Error: Registration failed");
+    } else {
+      LOG_INFO_APP("Succesfully registered!");
+    }
+  }
   /* USER CODE END APP_ZIGBEE_ApplicationStart */
 
 #if ( CFG_LPM_LEVEL != 0)
@@ -297,5 +308,17 @@ static void APP_ZIGBEE_OnOffClientStart(void)
 {
 }
 
+static enum zb_msg_filter_rc fkStackEventCallback( struct ZigBeeT * zb, uint32_t lId, void * pMessage, void * arg ) {
+  struct ZbMsgStackEventT *fkStackEvent;
+
+  if (lId == ZB_MSG_FILTER_STACK_EVENT) {
+    fkStackEvent = (struct ZbMsgStackEventT*)pMessage;
+    if (fkStackEvent->type == ZB_MSG_STACK_EVENT_PARENT_LINK_FAIL) {
+      xEventGroupSetBits(fkEventHandle, FK_EV_PARENT_LOST);
+    }
+  }
+  
+  return ZB_MSG_CONTINUE;
+}
 
 /* USER CODE END FD_LOCAL_FUNCTIONS */
