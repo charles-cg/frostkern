@@ -129,26 +129,80 @@ Hardware facts:
 | Cluster | ID | Key attributes | Notes |
 |---|---|---|---|
 | Temperature Measurement | 0x0402 | MeasuredValue (int16, 0.01 °C) | Shipped by ST |
-| Thermostat | 0x0201 | OccupiedCoolingSetpoint (int16, 0.01 °C) | Shipped by ST (`ZbZclThermServerAlloc`). Master/app writes setpoint. Default limits 16–32 °C, tune later |
+| Thermostat | 0x0201 | OccupiedCoolingSetpoint (int16, 0.01 °C) | Shipped by ST (`ZbZclThermServerAlloc`). Master/app writes setpoint. ST's default limits are 16–32 °C; ours are 30–95 °C (set at B7) |
 | Power Configuration | 0x0001 | BatteryVoltage (100 mV), BatteryPercentageRemaining | Shipped by ST |
 | Frostkern Status (manufacturer-specific) | 0xFC00 | Flow (uint16, 0.01 L/min), FanDuty (uint8, %), Mode (Idle/Active), FaultFlags (bitmap) | Built by us with the generic ZCL API (`ZbZclClusterAlloc`, `ZbZclAttrAppendList`, `ZbZclClusterAttach`) |
 
 - Flow Measurement (0x0404, 0.1 m³/h ≈ 1.7 L/min steps) and Fan Control (0x0202, FanMode enum only, no duty %) are not used; `0xFC00` replaces both. PID gains are compile-time constants.
-- Pairing: app "Pair" (`PERMIT_JOIN` frame) or master boot → master permits join for 180 s. An unpaired slave searches on its own with backoff (10 s → 1 min → 5 min cap). Factory reset = chip erase over ST-LINK (no buttons fitted). Network data persisted in flash. Security: Zigbee 3.0 default TC link key.
+- Pairing: app "Pair" (`PERMIT_JOIN` frame) or master boot → master permits join for 180 s. A slave that loses its parent rejoins with backoff (1 s doubling to a 60 s cap); after 5 failures it drops the network and does a full join, which needs permit-join open. Factory reset = chip erase over ST-LINK (no buttons fitted). Network data persisted in flash. Security: Zigbee 3.0 default TC link key.
 
-## 9. Master ↔ ESP32 UART frames (draft)
+## 9. Master ↔ ESP32 UART frames (frozen 2026-11-24)
 
-`SOF(0xA5) | LEN(1) | TYPE(1) | SEQ(1) | PAYLOAD(LEN) | CRC16-CCITT(2)`
+USART2 (PA12 TX / PA11 RX), 115200 8N1.
 
-| TYPE | Direction | Payload |
+### 9.1 Frame
+
+`SOF | LEN | TYPE | SEQ | PAYLOAD[LEN] | CRC_L | CRC_H`
+
+| Field | Size | Value |
 |---|---|---|
-| `TELEMETRY` | WBA → ESP | slave id, temp, flow, fan duty %, battery, mode, fault flags |
-| `SET_SETPOINT` | ESP → WBA | slave id (or all), setpoint 0.01 °C |
-| `PERMIT_JOIN` | ESP → WBA | duration s |
-| `DEVICE_JOINED` | WBA → ESP | slave id, IEEE address |
-| `ACK` / `NACK` | both | SEQ, error code |
+| SOF | 1 | `0xA5` |
+| LEN | 1 | payload length in bytes, 0–64 (header and CRC not counted) |
+| TYPE | 1 | see 9.2 |
+| SEQ | 1 | sender's counter, +1 per frame, wraps 255 → 0. Each side has its own |
+| PAYLOAD | LEN | see 9.3 |
+| CRC | 2 | CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`, no reflection, no final XOR) over LEN, TYPE, SEQ, PAYLOAD (not SOF). Sent low byte first |
 
-The ESP32 converts frames to JSON over a WebSocket on its own SoftAP. Frame format and JSON are frozen at the Nov 24 checkpoint.
+- All multi-byte fields are **little-endian** (native on both the STM32 and the ESP32). IEEE addresses too.
+- Receiver: hunt for SOF, read LEN; LEN > 64 or a bad CRC → drop the frame and resynchronise on the next SOF. A bad frame gets a `NACK` with code `BAD_CRC` only if its SEQ could be read.
+- Every ESP → WBA command gets exactly one `ACK` or `NACK` echoing its SEQ. WBA → ESP frames are not acknowledged (telemetry is periodic; a lost one is replaced by the next).
+
+### 9.2 Types
+
+| TYPE | Name | Direction |
+|---|---|---|
+| `0x01` | `TELEMETRY` | WBA → ESP |
+| `0x02` | `DEVICE_JOINED` | WBA → ESP |
+| `0x03` | `DEVICE_OFFLINE` | WBA → ESP |
+| `0x10` | `SET_SETPOINT` | ESP → WBA |
+| `0x11` | `PERMIT_JOIN` | ESP → WBA |
+| `0x7E` | `ACK` | WBA → ESP |
+| `0x7F` | `NACK` | WBA → ESP |
+
+### 9.3 Payloads
+
+Slaves are identified by their **IEEE address** (8 bytes, never changes; known boards in `roadmap.md` → Boards). `0xFFFFFFFFFFFFFFFF` means "all slaves" where allowed.
+
+| Type | Payload | LEN |
+|---|---|---|
+| `TELEMETRY` | `ieee u64`, `tempCenti i16` (0.01 °C), `setpointCenti i16` (0.01 °C), `flowCenti u16` (0.01 L/min), `fanPct u8` (0–100), `batteryMv u16`, `mode u8` (0 idle, 1 active), `faults u16` (`FK_FAULT_*` bits) | 20 |
+| `DEVICE_JOINED` | `ieee u64`, `shortAddr u16` | 10 |
+| `DEVICE_OFFLINE` | `ieee u64` (no report for 3 × the reporting interval) | 8 |
+| `SET_SETPOINT` | `ieee u64` (or all), `setpointCenti i16`, range 3000–9500 | 10 |
+| `PERMIT_JOIN` | `seconds u8`, 1–254 | 1 |
+| `ACK` | `ackedSeq u8` | 1 |
+| `NACK` | `ackedSeq u8`, `code u8` | 2 |
+
+NACK codes: `0x01 BAD_CRC`, `0x02 BAD_LEN`, `0x03 UNKNOWN_TYPE`, `0x04 OUT_OF_RANGE`, `0x05 UNKNOWN_SLAVE`, `0x06 BUSY` (Zigbee request could not be queued).
+
+### 9.4 WebSocket JSON (ESP32 SoftAP ↔ app)
+
+The ESP32 converts frames to JSON text messages in **human units** (it does the ÷100 and the IEEE formatting). IEEE is a 16-digit upper-case hex string without `0x`.
+
+WBA → app:
+```json
+{"type":"telemetry","ieee":"0080E1FFFE32FC28","tempC":61.25,"setpointC":65.0,"flowLpm":3.4,"fanPct":55,"batteryMv":5800,"mode":"active","faults":["overtemp"]}
+{"type":"deviceJoined","ieee":"0080E1FFFE32FC28","shortAddr":"D04B"}
+{"type":"deviceOffline","ieee":"0080E1FFFE32FC28"}
+{"type":"result","id":7,"ok":false,"error":"outOfRange"}
+```
+App → WBA (the app picks `id`; the ESP32 maps it to SEQ and answers with `result`):
+```json
+{"type":"setSetpoint","id":7,"ieee":"all","setpointC":65.0}
+{"type":"permitJoin","id":8,"seconds":180}
+```
+- `mode`: `"idle"` / `"active"`. `faults`: list of `"overtemp"`, `"ntc"`, `"noFlow"`. `error`: camelCase of the NACK code name, or `"timeout"` if the ESP32 got no ACK/NACK within 1 s.
+- Changing anything in §9 after 2026-11-24 needs the ESP32, the app and the master updated together.
 
 ## 10. Fail-safe (minimum for v1)
 
@@ -165,6 +219,6 @@ The ESP32 converts frames to JSON over a WebSocket on its own SoftAP. Frame form
 3. Engine-running detection (12 V level to ADC) for a future board revision.
 4. Install codes instead of the default TC link key.
 5. Facts still not checked against RM0493: LPTIM2 in Stop 1, ADC4 autonomy, Standby under FreeRTOS.
-6. Setpoint range beyond the Thermostat default 16–32 °C.
+6. How to widen the Thermostat setpoint limits from ST's default 16–32 °C to 30–95 °C (attribute limits in `ZbZclThermServerAlloc` or our own range check). Decide at B7.
 
 Resolved 2026-11-19: transport (SoftAP + WebSocket), YF-B7 power policy (§7), flow resolution and fan duty (`0xFC00`, §8), Thermostat shipped by ST, fail-safe minimum (§10), USART instances (§2).
