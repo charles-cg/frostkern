@@ -427,8 +427,9 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
         const TickType_t waitTicks =
             pdMS_TO_TICKS(2000U);
 #else
+        /* Wake periodically to service report-configuration deadlines. */
         const TickType_t waitTicks =
-            portMAX_DELAY;
+            pdMS_TO_TICKS(1000U);
 #endif
 
         BaseType_t received =
@@ -439,6 +440,8 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
 
 #if APP_IS_SLAVE
         APP_ZIGBEE_UpdateTemperature();
+#else
+        APP_ZIGBEE_ProcessTemperatureReportRetries();
 #endif
 
         if (received != pdPASS)
@@ -475,6 +478,7 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
                     LOG_NUMBER64(command.ieee_address));
 
                 APP_ZIGBEE_ConfigureTemperatureReports(
+                    nodeId,
                     command.short_address);
             }
         }
@@ -501,10 +505,19 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
             }
             else
             {
-                LOG_INFO_APP(
-                    "Slave temperature saved: valid=%u, centi-C=%d",
-                    (unsigned int)command.temperature_valid,
-                    (int)command.temperature_centi_c);
+                if (command.temperature_valid)
+                {
+                    LOG_INFO_APP("Temperature report from " LOG_DISPLAY64()
+                                 ": %d centi-C",
+                                 LOG_NUMBER64(ieee),
+                                 (int)command.temperature_centi_c);
+                }
+                else
+                {
+                    LOG_INFO_APP("Temperature report from " LOG_DISPLAY64()
+                                 ": measurement unavailable",
+                                 LOG_NUMBER64(ieee));
+                }
             }
         }
         else

@@ -1,0 +1,177 @@
+--- antes/Core/Inc/app_ipc.h
++++ integrado/Core/Inc/app_ipc.h
+@@ -60,6 +60,9 @@
+ /* Estado local del Slave */
+ extern AppStatus gStatus;
+ 
++/* SensorTask: update latest_sample under the mutex, then overwrite qSample.
++ * Control must not replace latest_sample with an older queued sample.
++ */
+ bool AppIpc_PublishSample(const AppSample *sample);
+ bool AppIpc_ReadLocalStatus(AppStatus *out);
+ 
+--- antes/Core/Src/app_freertos.c
++++ integrado/Core/Src/app_freertos.c
+@@ -24,6 +24,7 @@
+ /* USER CODE BEGIN Includes */
+ #include "app_ipc.h"
+ #include "app_uart_bridge.h"
++#include "sensor_task.h"
+ /* USER CODE END Includes */
+ 
+ /* Private typedef -----------------------------------------------------------*/
+@@ -107,6 +108,9 @@
+ 
+   /* USER CODE BEGIN RTOS_THREADS */
+   AppUartBridge_Start();
++#if APP_IS_SLAVE
++  SensorTask_Start();
++#endif
+   /* add threads, ... */
+   /* USER CODE END RTOS_THREADS */
+ 
+--- antes/Core/Src/app_ipc.c
++++ integrado/Core/Src/app_ipc.c
+@@ -7,6 +7,7 @@
+ 
+ #include "app_ipc.h"
+ #include "main.h"
++#include "task.h"
+ #include <string.h>
+ 
+ /* Cantidad de mensajes que caben en estas colas */
+@@ -125,12 +126,29 @@
+ 
+ bool AppIpc_PublishSample(const AppSample *sample)
+ {
+-    if (sample == NULL || qSample == NULL)
+-    {
+-        return false;
+-    }
+-
+-    return xQueueOverwrite(qSample, sample) == pdPASS;
++    if (sample == NULL || qSample == NULL || gStatusMutex == NULL)
++    {
++        return false;
++    }
++
++    AppSample snapshot = *sample;
++
++    if (xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE)
++    {
++        return false;
++    }
++
++    snapshot.source_node_id = gDeviceId.node_id;
++    gStatus.latest_sample = snapshot;
++    gStatus.updated_at_ms =
++        (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
++
++    xSemaphoreGive(gStatusMutex);
++
++    /* SensorTask is the sole producer. Control consumes qSample; Zigbee
++     * reads the protected snapshot without consuming the control queue.
++     */
++    return xQueueOverwrite(qSample, &snapshot) == pdPASS;
+ }
+ 
+ #endif
+--- antes/STM32_WPAN/App/app_zigbee.c
++++ integrado/STM32_WPAN/App/app_zigbee.c
+@@ -505,10 +505,19 @@
+             }
+             else
+             {
+-                LOG_INFO_APP(
+-                    "Slave temperature saved: valid=%u, centi-C=%d",
+-                    (unsigned int)command.temperature_valid,
+-                    (int)command.temperature_centi_c);
++                if (command.temperature_valid)
++                {
++                    LOG_INFO_APP("Temperature report from " LOG_DISPLAY64()
++                                 ": %d centi-C",
++                                 LOG_NUMBER64(ieee),
++                                 (int)command.temperature_centi_c);
++                }
++                else
++                {
++                    LOG_INFO_APP("Temperature report from " LOG_DISPLAY64()
++                                 ": measurement unavailable",
++                                 LOG_NUMBER64(ieee));
++                }
+             }
+         }
+         else
+--- antes/STM32_WPAN/App/app_zigbee_endpoint.c
++++ integrado/STM32_WPAN/App/app_zigbee_endpoint.c
+@@ -47,6 +47,7 @@
+ #include "app_network_config.h"
+ #include "app_ipc.h"
+ #include "app_zb_report_retry.h"
++#include "app_temperature_report.h"
+ #include "task.h"
+ #include "zcl/general/zcl.temp.meas.h"
+ /* USER CODE END PI */
+@@ -524,37 +525,38 @@
+ {
+ #if APP_IS_SLAVE
+     AppStatus localStatus;
+-
+-    if (stZigbeeAppInfo.temperatureCluster == NULL)
++    static AppTemperatureQuality previousQuality = APP_TEMPERATURE_NO_DATA;
++
++    if (stZigbeeAppInfo.temperatureCluster == NULL ||
++        !AppIpc_ReadLocalStatus(&localStatus))
+     {
+         return;
+     }
+ 
+-    if (!AppIpc_ReadLocalStatus(&localStatus))
+-    {
+-        return;
+-    }
+-
+-    int16_t temperature = (int16_t)ZCL_TEMP_MEAS_UNKNOWN;
+-
+-    if ((localStatus.latest_sample.valid &
+-         APP_SAMPLE_VALID_TEMP) != 0U)
+-    {
+-        temperature =
+-            localStatus.latest_sample.temperature_centi_c;
+-    }
+-
+-    enum ZclStatusCodeT result =
+-        ZbZclAttrIntegerWrite(
+-            stZigbeeAppInfo.temperatureCluster,
+-            ZCL_TEMP_MEAS_ATTR_MEAS_VAL,
+-            temperature);
++    _Static_assert(APP_TEMPERATURE_REPORT_UNKNOWN ==
++                   (int16_t)ZCL_TEMP_MEAS_UNKNOWN,
++                   "Internal and ZCL unknown-temperature values must match");
++
++    AppTemperatureQuality quality;
++    int16_t temperature = AppTemperatureReport_Value(
++        &localStatus.latest_sample, HAL_GetTick(),
++        APP_ZB_TEMP_MIN_CENTI_C, APP_ZB_TEMP_MAX_CENTI_C, &quality);
++
++    if (quality != previousQuality)
++    {
++        LOG_INFO_APP("Zigbee temperature quality=%u (0=no data,1=valid,2=stale,3=range)",
++                     (unsigned int)quality);
++        previousQuality = quality;
++    }
++
++    enum ZclStatusCodeT result = ZbZclAttrIntegerWrite(
++        stZigbeeAppInfo.temperatureCluster,
++        ZCL_TEMP_MEAS_ATTR_MEAS_VAL, temperature);
+ 
+     if (result != ZCL_STATUS_SUCCESS)
+     {
+-        LOG_ERROR_APP(
+-            "Temperature attribute update failed: 0x%02X",
+-            (unsigned int)result);
++        LOG_ERROR_APP("Temperature attribute update failed: 0x%02X",
++                      (unsigned int)result);
+     }
+ #endif
+ }

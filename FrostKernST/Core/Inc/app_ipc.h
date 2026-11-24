@@ -60,6 +60,9 @@ extern QueueHandle_t qConfig;
 /* Estado local del Slave */
 extern AppStatus gStatus;
 
+/* SensorTask: update latest_sample under the mutex, then overwrite qSample.
+ * Control must not replace latest_sample with an older queued sample.
+ */
 bool AppIpc_PublishSample(const AppSample *sample);
 bool AppIpc_ReadLocalStatus(AppStatus *out);
 

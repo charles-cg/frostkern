@@ -7,6 +7,7 @@
 
 #include "app_ipc.h"
 #include "main.h"
+#include "task.h"
 #include <string.h>
 
 /* Cantidad de mensajes que caben en estas colas */
@@ -125,12 +126,29 @@ void AppIpc_Init(void)
 
 bool AppIpc_PublishSample(const AppSample *sample)
 {
-    if (sample == NULL || qSample == NULL)
+    if (sample == NULL || qSample == NULL || gStatusMutex == NULL)
     {
         return false;
     }
 
-    return xQueueOverwrite(qSample, sample) == pdPASS;
+    AppSample snapshot = *sample;
+
+    if (xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE)
+    {
+        return false;
+    }
+
+    snapshot.source_node_id = gDeviceId.node_id;
+    gStatus.latest_sample = snapshot;
+    gStatus.updated_at_ms =
+        (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+
+    xSemaphoreGive(gStatusMutex);
+
+    /* SensorTask is the sole producer. Control consumes qSample; Zigbee
+     * reads the protected snapshot without consuming the control queue.
+     */
+    return xQueueOverwrite(qSample, &snapshot) == pdPASS;
 }
 
 #endif

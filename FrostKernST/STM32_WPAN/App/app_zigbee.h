@@ -114,7 +114,9 @@ extern void       APP_ZIGBEE_SerialCommandInstallCode     ( uint8_t * pRxBuffer,
 
 /* USER CODE BEGIN EFP */
 void APP_ZIGBEE_UpdateTemperature(void);
-void APP_ZIGBEE_ConfigureTemperatureReports(uint16_t shortAddress);
+void APP_ZIGBEE_ConfigureTemperatureReports(
+    uint8_t nodeId, uint16_t shortAddress);
+void APP_ZIGBEE_ProcessTemperatureReportRetries(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

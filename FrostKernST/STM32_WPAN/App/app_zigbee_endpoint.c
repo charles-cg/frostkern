@@ -46,6 +46,9 @@
 /* USER CODE BEGIN PI */
 #include "app_network_config.h"
 #include "app_ipc.h"
+#include "app_zb_report_retry.h"
+#include "app_temperature_report.h"
+#include "task.h"
 #include "zcl/general/zcl.temp.meas.h"
 /* USER CODE END PI */
 
@@ -84,7 +87,26 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+#if APP_IS_MASTER
 
+_Static_assert(APP_SLAVE_COUNT == APP_ZB_REPORT_RETRY_PEERS,
+               "Report retry slots must match the Slave count");
+_Static_assert(sizeof(uintptr_t) >= sizeof(uint32_t),
+               "Callback ticket must fit in uintptr_t");
+
+typedef struct
+{
+    uint32_t token;
+    uint32_t aps_status;
+    uint32_t zcl_status;
+    uint8_t attribute_status;
+    bool accepted;
+} AppTemperatureReportConfigResult;
+
+static AppZbReportRetry temperatureReportRetries;
+static QueueHandle_t temperatureReportResults = NULL;
+
+#endif
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -503,151 +525,218 @@ void APP_ZIGBEE_UpdateTemperature(void)
 {
 #if APP_IS_SLAVE
     AppStatus localStatus;
+    static AppTemperatureQuality previousQuality = APP_TEMPERATURE_NO_DATA;
 
-    if (stZigbeeAppInfo.temperatureCluster == NULL)
+    if (stZigbeeAppInfo.temperatureCluster == NULL ||
+        !AppIpc_ReadLocalStatus(&localStatus))
     {
         return;
     }
 
-    if (!AppIpc_ReadLocalStatus(&localStatus))
+    _Static_assert(APP_TEMPERATURE_REPORT_UNKNOWN ==
+                   (int16_t)ZCL_TEMP_MEAS_UNKNOWN,
+                   "Internal and ZCL unknown-temperature values must match");
+
+    AppTemperatureQuality quality;
+    int16_t temperature = AppTemperatureReport_Value(
+        &localStatus.latest_sample, HAL_GetTick(),
+        APP_ZB_TEMP_MIN_CENTI_C, APP_ZB_TEMP_MAX_CENTI_C, &quality);
+
+    if (quality != previousQuality)
     {
-        return;
+        LOG_INFO_APP("Zigbee temperature quality=%u (0=no data,1=valid,2=stale,3=range)",
+                     (unsigned int)quality);
+        previousQuality = quality;
     }
 
-    int16_t temperature = (int16_t)ZCL_TEMP_MEAS_UNKNOWN;
-
-    if ((localStatus.latest_sample.valid &
-         APP_SAMPLE_VALID_TEMP) != 0U)
-    {
-        temperature =
-            localStatus.latest_sample.temperature_centi_c;
-    }
-
-    enum ZclStatusCodeT result =
-        ZbZclAttrIntegerWrite(
-            stZigbeeAppInfo.temperatureCluster,
-            ZCL_TEMP_MEAS_ATTR_MEAS_VAL,
-            temperature);
+    enum ZclStatusCodeT result = ZbZclAttrIntegerWrite(
+        stZigbeeAppInfo.temperatureCluster,
+        ZCL_TEMP_MEAS_ATTR_MEAS_VAL, temperature);
 
     if (result != ZCL_STATUS_SUCCESS)
     {
-        LOG_ERROR_APP(
-            "Temperature attribute update failed: 0x%02X",
-            (unsigned int)result);
+        LOG_ERROR_APP("Temperature attribute update failed: 0x%02X",
+                      (unsigned int)result);
     }
 #endif
 }
 
 
 #if APP_IS_MASTER
+
+static uint32_t APP_ZIGBEE_ReportRetryNowMs(void)
+{
+    return (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+}
 
 static void APP_ZIGBEE_TemperatureReportConfigCallback(
     struct ZbZclCommandRspT *response,
     void *argument)
 {
-    UNUSED(argument);
+    /* The argument is a request ticket, never a pointer to a stack variable. */
+    AppTemperatureReportConfigResult result = {0};
+    result.token = (uint32_t)(uintptr_t)argument;
+    result.aps_status = response != NULL
+        ? (uint32_t)response->aps_status : UINT32_MAX;
+    result.zcl_status = response != NULL
+        ? (uint32_t)response->status : UINT32_MAX;
+    result.attribute_status = 0xFFU;
 
-    if (response == NULL)
+    if (response != NULL && response->payload != NULL && response->length > 0U)
     {
-        return;
+        result.attribute_status = response->payload[0];
     }
 
-    if ((response->aps_status != ZB_STATUS_SUCCESS) ||
-        (response->status != ZCL_STATUS_SUCCESS))
+    result.accepted =
+        response != NULL &&
+        response->aps_status == ZB_STATUS_SUCCESS &&
+        response->status == ZCL_STATUS_SUCCESS &&
+        response->hdr.cmdId == ZCL_COMMAND_CONFIG_REPORTING_RESPONSE &&
+        response->payload != NULL &&
+        response->length == 1U &&
+        response->payload[0] == ZCL_STATUS_SUCCESS;
+
+    /* Callback runs in the ST stack task. Do not call Zigbee APIs or wait here. */
+    if (temperatureReportResults == NULL ||
+        xQueueSend(temperatureReportResults, &result, 0U) != pdPASS)
     {
-        LOG_ERROR_APP(
-            "Temperature report config failed: APS=%u, ZCL=%u",
-            (unsigned int)response->aps_status,
-            (unsigned int)response->status);
-        return;
+        LOG_ERROR_APP("Temperature config response queue full; deadline will recover");
+    }
+}
+
+static enum ZclStatusCodeT APP_ZIGBEE_SendTemperatureReportConfig(
+    uint16_t shortAddress,
+    uint32_t token)
+{
+    if (stZigbeeAppInfo.temperatureCluster == NULL)
+    {
+        return ZCL_STATUS_FAILURE;
     }
 
-    if ((response->hdr.cmdId !=
-         ZCL_COMMAND_CONFIG_REPORTING_RESPONSE) ||
-        (response->payload == NULL) ||
-        (response->length == 0U))
-    {
-        LOG_ERROR_APP(
-            "Invalid temperature report config response");
-        return;
-    }
+    struct ZbZclAttrReportConfigT config = {0};
+    config.dst.mode = ZB_APSDE_ADDRMODE_SHORT;
+    config.dst.endpoint = APP_ZIGBEE_ENDPOINT;
+    config.dst.nwkAddr = shortAddress;
+    config.num_records = 1U;
+    config.record_list[0].direction = ZCL_REPORT_DIRECTION_NORMAL;
+    config.record_list[0].attr_id = ZCL_TEMP_MEAS_ATTR_MEAS_VAL;
+    config.record_list[0].attr_type = ZCL_DATATYPE_SIGNED_16BIT;
+    config.record_list[0].min = 10U;
+    config.record_list[0].max = 60U;
+    config.record_list[0].change = 50.0;
 
-    /*
-     * Para nuestro unico atributo, una respuesta de exito
-     * contiene un solo byte con ZCL_STATUS_SUCCESS.
-     */
-    if ((response->length != 1U) ||
-        (response->payload[0] != ZCL_STATUS_SUCCESS))
-    {
-        LOG_ERROR_APP(
-            "Temperature report config rejected: status=%u",
-            (unsigned int)response->payload[0]);
-        return;
-    }
-
-    LOG_INFO_APP(
-        "Temperature report configuration accepted");
+    return ZbZclAttrReportConfigReq(
+        stZigbeeAppInfo.temperatureCluster,
+        &config,
+        APP_ZIGBEE_TemperatureReportConfigCallback,
+        (void *)(uintptr_t)token);
 }
 
 #endif
 
 void APP_ZIGBEE_ConfigureTemperatureReports(
+    uint8_t nodeId,
     uint16_t shortAddress)
 {
 #if APP_IS_MASTER
-
-    if ((stZigbeeAppInfo.temperatureCluster == NULL) ||
-        (shortAddress >= 0xFFF8U))
+    if (nodeId == 0U || nodeId > APP_SLAVE_COUNT ||
+        shortAddress == 0U || shortAddress >= 0xFFF8U)
     {
-        LOG_ERROR_APP(
-            "Invalid temperature report config destination");
+        LOG_ERROR_APP("Invalid temperature report config destination");
         return;
     }
 
-    struct ZbZclAttrReportConfigT config = {0};
-
-    config.dst.mode = ZB_APSDE_ADDRMODE_SHORT;
-    config.dst.endpoint = APP_ZIGBEE_ENDPOINT;
-    config.dst.nwkAddr = shortAddress;
-
-    config.num_records = 1U;
-
-    config.record_list[0].direction =
-        ZCL_REPORT_DIRECTION_NORMAL;
-
-    config.record_list[0].attr_id =
-        ZCL_TEMP_MEAS_ATTR_MEAS_VAL;
-
-    config.record_list[0].attr_type =
-        ZCL_DATATYPE_SIGNED_16BIT;
-
-    config.record_list[0].min = 10U;
-    config.record_list[0].max = 60U;
-    config.record_list[0].change = 50.0;
-
-    enum ZclStatusCodeT result =
-        ZbZclAttrReportConfigReq(
-            stZigbeeAppInfo.temperatureCluster,
-            &config,
-            APP_ZIGBEE_TemperatureReportConfigCallback,
-            NULL);
-
-    if (result != ZCL_STATUS_SUCCESS)
+    if (temperatureReportResults == NULL)
     {
-        LOG_ERROR_APP(
-            "Could not send temperature report config: %u",
-            (unsigned int)result);
-        return;
+        temperatureReportResults = xQueueCreate(
+            8U, sizeof(AppTemperatureReportConfigResult));
+        if (temperatureReportResults == NULL)
+        {
+            Error_Handler();
+            return;
+        }
+        AppZbReportRetry_Init(&temperatureReportRetries);
     }
 
-    LOG_INFO_APP(
-        "Temperature report config requested for 0x%04X",
-        (unsigned int)shortAddress);
-
+    if (AppZbReportRetry_Schedule(&temperatureReportRetries,
+            nodeId, shortAddress, APP_ZIGBEE_ReportRetryNowMs()))
+    {
+        LOG_INFO_APP("Slave %u: temperature report config scheduled in 20 s",
+                     (unsigned int)nodeId);
+    }
 #else
-
+    (void)nodeId;
     (void)shortAddress;
+#endif
+}
 
+void APP_ZIGBEE_ProcessTemperatureReportRetries(void)
+{
+#if APP_IS_MASTER
+    if (temperatureReportResults == NULL)
+    {
+        return;
+    }
+
+    AppTemperatureReportConfigResult result;
+    while (xQueueReceive(temperatureReportResults, &result, 0U) == pdPASS)
+    {
+        uint8_t nodeId = AppZbReportRetry_Complete(
+            &temperatureReportRetries, result.token, result.accepted,
+            APP_ZIGBEE_ReportRetryNowMs());
+        if (nodeId == 0U)
+        {
+            continue; /* Old response from a previous attempt or network address. */
+        }
+        if (result.accepted)
+        {
+            LOG_INFO_APP("Slave %u: temperature report configuration accepted",
+                         (unsigned int)nodeId);
+        }
+        else
+        {
+            LOG_ERROR_APP("Slave %u: report config response failed, APS=%lu ZCL=%lu Attr=%u",
+                          (unsigned int)nodeId, (unsigned long)result.aps_status,
+                          (unsigned long)result.zcl_status,
+                          (unsigned int)result.attribute_status);
+        }
+    }
+
+    AppZbReportRetryAction action;
+    while (AppZbReportRetry_Next(&temperatureReportRetries,
+                                APP_ZIGBEE_ReportRetryNowMs(), &action))
+    {
+        if (action.type == APP_ZB_REPORT_ACTION_TIMEOUT)
+        {
+            LOG_ERROR_APP("Slave %u: report config attempt %u timed out",
+                          (unsigned int)action.node_id,
+                          (unsigned int)action.attempt);
+        }
+        else if (action.type == APP_ZB_REPORT_ACTION_EXHAUSTED)
+        {
+            LOG_ERROR_APP("Slave %u: report config stopped after 3 attempts",
+                          (unsigned int)action.node_id);
+        }
+        else
+        {
+            LOG_INFO_APP("Slave %u: report config attempt %u/3 to 0x%04X",
+                         (unsigned int)action.node_id,
+                         (unsigned int)action.attempt,
+                         (unsigned int)action.short_address);
+
+            enum ZclStatusCodeT status = APP_ZIGBEE_SendTemperatureReportConfig(
+                action.short_address, action.token);
+
+            if (status != ZCL_STATUS_SUCCESS)
+            {
+                LOG_ERROR_APP("Slave %u: report config could not be sent, status=%u",
+                              (unsigned int)action.node_id,
+                              (unsigned int)status);
+                (void)AppZbReportRetry_Complete(&temperatureReportRetries,
+                    action.token, false, APP_ZIGBEE_ReportRetryNowMs());
+            }
+        }
+    }
 #endif
 }
 /* USER CODE END FD_LOCAL_FUNCTIONS */

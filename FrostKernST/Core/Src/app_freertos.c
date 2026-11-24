@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app_ipc.h"
+#include "app_uart_bridge.h"
 #include "sensor_task.h"
 /* USER CODE END Includes */
 
@@ -59,11 +60,12 @@ const osThreadAttr_t defaultTask_attributes = {
 /* USER CODE END FunctionPrototypes */
 
 /* USER CODE BEGIN 4 */
-void vApplicationStackOverflowHook(xTaskHandle xTask, char *pcTaskName)
+void vApplicationStackOverflowHook(xTaskHandle xTask,char *pcTaskName)
 {
-   /* Run time stack overflow checking is performed if
-   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
-   called if a stack overflow is detected. */
+    (void)xTask;
+    (void)pcTaskName;
+
+    Error_Handler();
 }
 /* USER CODE END 4 */
 
@@ -105,10 +107,11 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  AppUartBridge_Start();
+#if APP_IS_SLAVE
+  SensorTask_Start();
+#endif
   /* add threads, ... */
-	#if APP_IS_SLAVE
-	  SensorTask_Start();
-	#endif
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
