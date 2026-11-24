@@ -8,7 +8,7 @@ Status: agreed 2026-11-19. Companion to `freertos-plan.md` (runtime design).
 - CubeMX (GUI) → "CMake" toolchain → VS Code with the STM32Cube extension, STM32CubeCLT toolchain, ST-LINK GDB server. The old system GCC 10.3 and OpenOCD are not used.
 - Hardware: the `wba55_v1` PCB from day one, flashed and debugged with the STLINK-V3MINIE. Debug log on USART1 (PB12 TX / PA8 RX) through the probe's VCP. Reset through the ST-LINK (no reset or pair button on the board).
 - Tests run on real hardware. Each brick ends with its acceptance check passing on the board, then one commit.
-- One branch per codebase: `firmware`, `esp32`, `app`. Merge into `main` only at checkpoints; `main` always holds working code.
+- One branch per codebase: `firmware`, `esp32`, `app`. At checkpoints they are merged into `integration` (created 2026-11-24 from `firmware` + `app`), not into `main`: the team has not yet chosen whose firmware ships. `main` gets a merge only once that is decided. In the checkpoint rows below, "merge into `main`" therefore means "merge into `integration`".
 
 ## Project layout
 
@@ -50,18 +50,18 @@ The IEEE address is fixed per chip. Short addresses are assigned at join and can
 | B3 | Nov 23–24 | firmware | Master forms the network; permit-join 180 s at boot; slave searches with backoff and joins as SED | Master logs PAN ID and the slave's IEEE address; slave logs parent polls; rejoin works after power-cycling either board |
 | ✅ | Nov 24 | all | **Checkpoint:** merge `firmware` into `main`. **Freeze** the UART frame format and WebSocket JSON | |
 | B3b | Nov 25 | firmware | Low-power spike: slave with `CFG_LPM_LEVEL` 2 (Stop 1 + tickless), only Zigbee polling running. Measure current. Then back to LPM 0 for development | Slave still polls and answers in Stop 1; sleep and awake current written down |
-| E1 | Nov 25 | esp32 | SoftAP + WebSocket server sending fake telemetry JSON | Phone joins the AP and sees JSON in a WebSocket client |
+| E1 | Nov 25 | esp32 | Station mode on the phone hotspot (reconnects on drop); HTTPS `PUT` of fake telemetry to Firebase RTDB (`freertos-plan.md` §9.4) | Fake telemetry updates in the Firebase console every second; survives turning the hotspot off and on |
 | B4 | Nov 26 | firmware | `SensorTask`: NTC on ADC4 with switched bias (PB15), battery on ADC4 | NTC measured with a multimeter first (≈50 kΩ at 25 °C). °C within ±1 °C of a reference thermometer at room temperature and in hot water near 70 °C; battery voltage within ±50 mV of a multimeter |
 | B5 | Nov 26 | firmware | LPTIM1 pulse counting on PA0; boost + YF-B7 power control (Active: continuous, Idle: 2 s window every 5 min) | L/min matches a timed bucket fill within 10 % |
-| A1 | Nov 26 | app | Connect to the ESP32, show live telemetry | Fake telemetry updates on screen |
+| A1 | Nov 26 | app | Firebase SDK, anonymous sign-in, show live telemetry from `/slaves` | Fake telemetry updates on screen |
 | B6 | Nov 27 | firmware | `ControlTask`: fan PWM on LPTIM2 (PA1), PID (decide: own PI vs CMSIS-DSP; default own PI) | Fan duty follows temperature; holds setpoint without oscillating |
-| A2 | Nov 27 | app | Setpoint control, Pair button | Sends the right JSON to the fake ESP32 |
+| A2 | Nov 27 | app | Setpoint control, Pair button | Writes the right `/commands/*` and shows `/results/{id}` |
 | B7 | Nov 28 | firmware | Zigbee data model: Temperature, Power Config, Thermostat setpoint, `0xFC00 Frostkern Status`; reporting rules; setpoint write master → slave | Master logs reports from the slave; setpoint written from the master changes the slave's PID target |
 | ✅ | Nov 28 | all | **Checkpoint:** merge into `main` | |
 | B8 | Nov 29 | firmware | Master `BridgeTask` on USART2 (PA12 TX / PA11 RX), frame codec + CRC16, ESP32_EN power gating | Frames round-trip with the ESP32; bad CRC gets a NACK |
-| E2 | Nov 29 | esp32 | Real UART frames ⇄ JSON | App shows real slave data |
+| E2 | Nov 29 | esp32 | Real UART frames → Firebase; `/commands` polled every 2 s → UART, ACK/NACK → `/results` | App shows real slave data; a setpoint from the app gets a result |
 | B9 | Nov 30 | firmware | Final low-power integration on both slaves; check LPTIM1 counting and LPTIM2 PWM in Stop 1 (fallback: Sleep while the fan runs) | Idle and Active current measured; battery-life estimate computed |
-| — | Nov 30 | all | End-to-end: app → ESP32 → master → slave and back | Setpoint from the app reaches a slave; telemetry reaches the app |
+| — | Nov 30 | all | End-to-end: app → Firebase → ESP32 → master → slave and back | Setpoint from the app reaches a slave; telemetry reaches the app |
 | — | before Dec 1 | rig | Heater on, fan at 100 %: does the loop level off below 80 °C? If not: smaller heater, bigger radiator, or manual heater switching during the demo | Loop temperature plateau written down |
 | ✅ | Dec 1 | all | Soak test with both slaves, battery numbers, demo rehearsal. **Merge** into `main` | Runs for several hours without a fault |
 
@@ -101,7 +101,7 @@ The IEEE address is fixed per chip. Short addresses are assigned at join and can
 | NTC | Believed 50 kΩ / B3950; measure at room temperature before B4. Keep R19 = 22 kΩ if confirmed |
 | Zigbee persistence | On for both boards (CubeMX `ZGB_PERSISTENCE`, ST's `*_Persist` examples): master keeps PAN and keys across reboots, slave restores and rejoins without permit-join. Stored in the last 24 KB of flash; chip erase clears it. Decided 2026-11-23 |
 | Pairing | No buttons: master permits join 180 s at boot and on `PERMIT_JOIN` from the app; slaves auto-join with backoff; factory reset = chip erase over ST-LINK |
-| ESP32 ⇄ app | ESP32 SoftAP + WebSocket, JSON mirroring the UART frame types |
+| ESP32 ⇄ app | Through Firebase Realtime Database only (`freertos-plan.md` §9.4). ESP32 in station mode on a phone's cellular hotspot. Changed 2026-11-24 from SoftAP + WebSocket: the project needs the data in Firebase and the school Wi-Fi is locked down |
 | Fail-safe (minimum) | NTC out of range → fault, fan 100 %, report now. Loop ≥ 80 °C (`FK_OVERTEMP_C`) → `OVERTEMP` fault, fan 100 %, report now, app alarm. Lost parent → keep PID on last setpoint, rejoin with backoff. No flow > 5 s → fault + report. IWDG out of scope |
 | PID | Decide at B6; default: own PI in `common/pid.c` |
 | UART instances | Debug VCP = USART1 (PB12/PA8); ESP32 link = USART2 (PA12/PA11) |

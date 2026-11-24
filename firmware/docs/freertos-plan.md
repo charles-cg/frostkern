@@ -18,7 +18,7 @@ Target vehicle: gasoline (combustion-engine) car, not an EV (decided 2026-11-21)
 
 - All three boards are the same PCB (`wba55_v1`), STM32WBA55CGU6.
 - Two CubeMX projects built with CMake in VS Code (not CubeIDE): `firmware/master` (Coordinator, FFD) and `firmware/slave` (Sleepy End Device, RFD), plus shared code in `firmware/common`. The Zigbee role is set in each `.ioc` (`ZGB_DEVICE_ROLE`, `ZGB_APPLICATION`, `ZGB_SLEEPY_MODE`, `CFG_LPM_LEVEL`) and drives generated code and linked libs, so one `.ioc` cannot produce both roles.
-- Master: XIAO ESP32 add-on is a Wi-Fi bridge to `frostkernApp` over UART. ESP32 supply is switched by `ESP32_EN` (TPS22918). The ESP32 runs a SoftAP + WebSocket server; the phone connects to it directly (no router or internet in the car).
+- Master: XIAO ESP32 add-on is a Wi-Fi bridge to `frostkernApp` over UART. ESP32 supply is switched by `ESP32_EN` (TPS22918). The ESP32 joins a phone's cellular hotspot (Wi-Fi station mode) and talks to the app only through Firebase Realtime Database (§9.4); the app never connects to the ESP32 directly. Changed 2026-11-24 from SoftAP + WebSocket: the project needs the data in Firebase, and the school Wi-Fi blocks devices like this.
 - Slave: 1 NTC, 1 YF-B7 flow sensor. Fan (PC fan) runs from an external supply, switched by a MOSFET driven by the slave. The pump is always on and not controlled by the MCU.
 - Control is local to each slave (PID). The master only sends the setpoint and collects telemetry.
 
@@ -185,24 +185,34 @@ Slaves are identified by their **IEEE address** (8 bytes, never changes; known b
 
 NACK codes: `0x01 BAD_CRC`, `0x02 BAD_LEN`, `0x03 UNKNOWN_TYPE`, `0x04 OUT_OF_RANGE`, `0x05 UNKNOWN_SLAVE`, `0x06 BUSY` (Zigbee request could not be queued).
 
-### 9.4 WebSocket JSON (ESP32 SoftAP ↔ app)
+### 9.4 Firebase Realtime Database layout (ESP32 ↔ Firebase ↔ app)
 
-The ESP32 converts frames to JSON text messages in **human units** (it does the ÷100 and the IEEE formatting). IEEE is a 16-digit upper-case hex string without `0x`.
+Replaces the SoftAP + WebSocket JSON (changed 2026-11-24). §9.1–9.3 are unchanged.
 
-WBA → app:
-```json
-{"type":"telemetry","ieee":"0080E1FFFE32FC28","tempC":61.25,"setpointC":65.0,"flowLpm":3.4,"fanPct":55,"batteryMv":5800,"mode":"active","faults":["overtemp"]}
-{"type":"deviceJoined","ieee":"0080E1FFFE32FC28","shortAddr":"D04B"}
-{"type":"deviceOffline","ieee":"0080E1FFFE32FC28"}
-{"type":"result","id":7,"ok":false,"error":"outOfRange"}
+The ESP32 joins the phone's hotspot in station mode and uses the RTDB REST API over HTTPS (`esp_http_client` + `esp_crt_bundle_attach`). The app uses the Firebase SDK. Values are in **human units** (the ESP32 does the ÷100 and the IEEE formatting). IEEE is a 16-digit upper-case hex string without `0x`, used as the key.
+
 ```
-App → WBA (the app picks `id`; the ESP32 maps it to SEQ and answers with `result`):
-```json
-{"type":"setSetpoint","id":7,"ieee":"all","setpointC":65.0}
-{"type":"permitJoin","id":8,"seconds":180}
+/slaves/{ieee}/telemetry   ESP32 writes (PUT) on each TELEMETRY frame, at most once per second per slave
+    {"tempC":61.25,"setpointC":65.0,"flowLpm":3.4,"fanPct":55,"batteryMv":5800,
+     "mode":"active","faults":["overtemp"],"ts":{".sv":"timestamp"}}
+/slaves/{ieee}/info        ESP32 writes on DEVICE_JOINED / DEVICE_OFFLINE
+    {"shortAddr":"D04B","online":true,"ts":{".sv":"timestamp"}}
+/bridge                    ESP32 writes every 30 s while connected
+    {"lastSeen":{".sv":"timestamp"}}
+/commands/setSetpoint      app writes; ESP32 polls
+    {"id":7,"ieee":"all","setpointC":65.0}
+/commands/permitJoin       app writes; ESP32 polls
+    {"id":8,"seconds":180}
+/results/{id}              ESP32 writes after the ACK/NACK
+    {"ok":false,"error":"outOfRange"}
 ```
+
 - `mode`: `"idle"` / `"active"`. `faults`: list of `"overtemp"`, `"ntc"`, `"noFlow"`. `error`: camelCase of the NACK code name, or `"timeout"` if the ESP32 got no ACK/NACK within 1 s.
-- Changing anything in §9 after 2026-11-24 needs the ESP32, the app and the master updated together.
+- `{".sv":"timestamp"}` makes Firebase fill in its own server time, so the ESP32 needs no clock. The app treats the bridge as offline when `/bridge/lastSeen` is older than 90 s.
+- Commands: the ESP32 reads `/commands.json` every 2 s and acts on a command when its `id` is new (the last handled `id` per command is kept in RAM; after a reboot the first poll only records the ids, so an old command is not resent). The app picks `id` (increasing integer) and waits for `/results/{id}`. Latest command wins; that is enough for setpoints.
+- Auth: the app signs in anonymously; database rules allow read/write only with `auth != null`. The ESP32 authenticates with the legacy database secret (`?auth=`), kept in `menuconfig`, never in git.
+- No internet → telemetry is not uploaded and setpoints cannot be changed from the app; the slaves keep running their PID on the last setpoint. Check cellular coverage at the demo venue.
+- Changing anything in §9 needs the ESP32, the app and the master updated together.
 
 ## 10. Fail-safe (minimum for v1)
 
@@ -221,4 +231,4 @@ App → WBA (the app picks `id`; the ESP32 maps it to SEQ and answers with `resu
 5. Facts still not checked against RM0493: LPTIM2 in Stop 1, ADC4 autonomy, Standby under FreeRTOS.
 6. How to widen the Thermostat setpoint limits from ST's default 16–32 °C to 30–95 °C (attribute limits in `ZbZclThermServerAlloc` or our own range check). Decide at B7.
 
-Resolved 2026-11-19: transport (SoftAP + WebSocket), YF-B7 power policy (§7), flow resolution and fan duty (`0xFC00`, §8), Thermostat shipped by ST, fail-safe minimum (§10), USART instances (§2).
+Resolved 2026-11-19: transport (SoftAP + WebSocket; replaced 2026-11-24 by phone hotspot + Firebase, §9.4), YF-B7 power policy (§7), flow resolution and fan duty (`0xFC00`, §8), Thermostat shipped by ST, fail-safe minimum (§10), USART instances (§2).
