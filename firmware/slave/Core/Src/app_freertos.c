@@ -66,6 +66,8 @@ const osThreadAttr_t defaultTask_attributes = {
 /* USER CODE BEGIN FunctionPrototypes */
 static void SupervisorTask(void *argument);
 static void LinkTask(void *argument);
+static void fkRejoinCallback(struct ZbNlmeJoinConfT *conf, void *arg);
+static bool fkTryRejoinOnce(void);
 /* USER CODE END FunctionPrototypes */
 
 /* USER CODE BEGIN 4 */
@@ -185,9 +187,72 @@ static void LinkTask(void *argument) {
   for (;;) {
     EventBits_t bits = xEventGroupWaitBits(fkEventHandle, FK_EV_PARENT_LOST,
                                            pdTRUE, pdFALSE, portMAX_DELAY);
-    if ((bits & FK_EV_PARENT_LOST) != 0U) {
-      LOG_INFO_APP("Link: parent lost");
+    if ((bits & FK_EV_PARENT_LOST) == 0U) {
+      continue;
+    }
+    LOG_INFO_APP("Link: parent lost, trying to rejoin");
+
+    /* Retry with exponential backoff (piece 3). After FK_REJOIN_MAX_ATTEMPTS
+       failures, drop the old network and let ST's task do a full join
+       (piece 4). */
+    uint32_t backoffMs = FK_REJOIN_BACKOFF_MIN_MS;
+    uint32_t attempt = 0U;
+
+    while (!fkTryRejoinOnce()) {
+      attempt++;
+      if (attempt >= FK_REJOIN_MAX_ATTEMPTS) {
+        LOG_ERROR_APP("Link: %u rejoins failed, falling back to a full join",
+                      (unsigned)attempt);
+        ZbReset(stZigbeeAppInfo.pstZigbee);
+        osSemaphoreRelease(NwkFormStartSemaphore);
+        break;
+      }
+      LOG_INFO_APP("Link: attempt %u failed, retrying in %u ms",
+                   (unsigned)attempt, (unsigned)backoffMs);
+      vTaskDelay(pdMS_TO_TICKS(backoffMs));
+
+      backoffMs *= 2U;
+      if (backoffMs > FK_REJOIN_BACKOFF_MAX_MS) {
+        backoffMs = FK_REJOIN_BACKOFF_MAX_MS;
+      }
     }
   }
+}
+
+/* One rejoin attempt: send the request, wait for the callback, report.
+   Returns true only if the stack confirmed a successful rejoin. */
+static bool fkTryRejoinOnce(void) {
+  xEventGroupClearBits(fkEventHandle, FK_EV_REJOIN_DONE);
+
+  enum ZbStatusCodeT reqStatus =
+      ZbStartupRejoin(stZigbeeAppInfo.pstZigbee, fkRejoinCallback, NULL);
+  if (reqStatus != ZB_STATUS_SUCCESS) {
+    LOG_ERROR_APP("Link: rejoin request refused (0x%02X)", reqStatus);
+    return false;
+  }
+
+  EventBits_t bits =
+      xEventGroupWaitBits(fkEventHandle, FK_EV_REJOIN_DONE, pdTRUE, pdFALSE,
+                          pdMS_TO_TICKS(FK_REJOIN_TIMEOUT_MS));
+  if ((bits & FK_EV_REJOIN_DONE) == 0U) {
+    LOG_ERROR_APP("Link: rejoin timed out");
+    return false;
+  }
+  if (fkRejoinStatus != ZB_STATUS_SUCCESS) {
+    LOG_ERROR_APP("Link: rejoin failed (0x%02X)", fkRejoinStatus);
+    return false;
+  }
+
+  LOG_INFO_APP("Link: rejoined, short address 0x%04X",
+               ZbShortAddress(stZigbeeAppInfo.pstZigbee));
+  return true;
+}
+
+/* Called by the Zigbee stack when a ZbStartupRejoin() request finishes. */
+static void fkRejoinCallback(struct ZbNlmeJoinConfT *conf, void *arg) {
+  (void)arg;
+
+  fkRejoinStatus = conf->status;
+  xEventGroupSetBits(fkEventHandle, FK_EV_REJOIN_DONE);
 }
 /* USER CODE END Application */
