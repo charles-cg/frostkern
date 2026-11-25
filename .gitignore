@@ -3,3 +3,8 @@ firmware/**/build/
 
 # macOS
 .DS_Store
+
+# ESP-IDF: sdkconfig holds the Wi-Fi password and Firebase secret
+firmware/esp32/**/sdkconfig
+firmware/esp32/**/sdkconfig.old
+firmware/esp32/**/managed_components/
