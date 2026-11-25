@@ -1,24 +1,42 @@
 import { StyleSheet } from "react-native";
 
 import type { SensorId } from "@/constants/sensors";
+import { useLiveData } from "@/context/live-data";
 import SensorCard from "./sensor-card";
 import { ThemedView } from "./themed-view";
 
-// Static for now. Later these will be the latest readings from the master.
-// Order = grid order: inlets on the top row, outlets below.
-const READINGS: { sensor: SensorId; value: string }[] = [
-  { sensor: "temperatureIn", value: "30.0" },
-  { sensor: "flowRateIn", value: "10.0" },
-  { sensor: "temperatureOut", value: "60.0" },
-  { sensor: "flowRateOut", value: "9.0" },
+// Grid order: inlets on the top row, outlets below.
+const ORDER: SensorId[] = [
+  "temperatureIn",
+  "flowRateIn",
+  "temperatureOut",
+  "flowRateOut",
 ];
 
+// Temperatures to 0.1 °C; flows to 0.01 L/min so a slow flow doesn't round to 0.
+const DECIMALS: Record<SensorId, number> = {
+  temperatureIn: 1,
+  temperatureOut: 1,
+  flowRateIn: 2,
+  flowRateOut: 2,
+};
+
 export default function SensorGrid() {
+  const { readings } = useLiveData();
+
   return (
     <ThemedView style={styles.grid}>
-      {READINGS.map(({ sensor, value }) => (
-        <SensorCard key={sensor} sensor={sensor} value={value} />
-      ))}
+      {ORDER.map((sensor) => {
+        const value = readings[sensor];
+        return (
+          <SensorCard
+            key={sensor}
+            sensor={sensor}
+            // "—" = no valid reading (slave not reporting or sensor fault).
+            value={value === null ? "—" : value.toFixed(DECIMALS[sensor])}
+          />
+        );
+      })}
     </ThemedView>
   );
 }

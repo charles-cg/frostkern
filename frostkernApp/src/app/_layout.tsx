@@ -1,13 +1,17 @@
 import { Stack } from "expo-router";
 
+import { LiveDataProvider } from "@/context/live-data";
 import { SettingsProvider } from "@/context/settings";
 
 export default function RootLayout() {
   return (
     <SettingsProvider>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-      </Stack>
+      {/* One Firebase connection shared by every screen. */}
+      <LiveDataProvider>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+        </Stack>
+      </LiveDataProvider>
     </SettingsProvider>
   );
 }

@@ -1,4 +1,5 @@
 import EngineStateCard from "@/components/engine-state-card";
+import LiveStatus from "@/components/live-status";
 import SensorGrid from "@/components/sensor-grid";
 import { ThemedView } from "@/components/themed-view";
 import { useSettings } from "@/context/settings";
@@ -11,6 +12,7 @@ export default function Index() {
     <ThemedView style={styles.container}>
       <EngineStateCard state="normal" detail={t("engineAllOk")} />
       <SensorGrid />
+      <LiveStatus />
     </ThemedView>
   );
 }

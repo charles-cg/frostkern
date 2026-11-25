@@ -20,6 +20,13 @@ const en = {
   engineOverheat: "Overheat",
   engineAllOk: "All temperatures within limits",
 
+  // Live data
+  liveConnecting: "Connecting…",
+  liveOk: "Live",
+  liveUpdated: "updated {seconds} s ago",
+  liveBridgeOffline: "Bridge offline: showing last known values",
+  liveError: "Can't reach the database",
+
   // Edit
   ac: "AC",
   on: "On",
@@ -53,6 +60,12 @@ const es: Record<TranslationKey, string> = {
   engineWarning: "Advertencia",
   engineOverheat: "Sobrecalentado",
   engineAllOk: "Todas las temperaturas dentro del límite",
+
+  liveConnecting: "Conectando…",
+  liveOk: "En vivo",
+  liveUpdated: "actualizado hace {seconds} s",
+  liveBridgeOffline: "Puente desconectado: últimos valores conocidos",
+  liveError: "No se puede conectar a la base de datos",
 
   ac: "A/C",
   on: "Encendido",
