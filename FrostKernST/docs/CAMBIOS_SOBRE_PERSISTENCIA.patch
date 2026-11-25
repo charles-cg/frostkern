@@ -1,0 +1,833 @@
+--- /dev/null
++++ b/Core/Inc/app_flow_report.h
+@@ -0,0 +1,19 @@
++#ifndef FROSTKERN_APP_FLOW_REPORT_H
++#define FROSTKERN_APP_FLOW_REPORT_H
++#include <stddef.h>
++#include "app_types.h"
++/* Private FrostKern cluster: exact mL/min, NOT the standard Flow Measurement
++ * cluster's units. All boards must use this same extension. No new library. */
++#define APP_ZB_FLOW_CLUSTER_ID 0xFC10U
++#define APP_ZB_FLOW_ATTRIBUTE_ID 0x0000U
++#define APP_ZB_FLOW_UNKNOWN UINT32_MAX
++#define APP_FLOW_SAMPLE_MAX_AGE_MS 5000U
++static inline uint32_t AppFlowReport_Value(const AppSample *sample, uint32_t now)
++{
++    if (sample == NULL || (sample->valid & APP_SAMPLE_VALID_FLOW) == 0U ||
++        (uint32_t)(now - sample->timestamp_ms) > APP_FLOW_SAMPLE_MAX_AGE_MS) {
++        return APP_ZB_FLOW_UNKNOWN;
++    }
++    return sample->flow_ml_min; /* Zero is valid when there are no pulses. */
++}
++#endif
+--- a/Core/Inc/app_ipc.h
++++ b/Core/Inc/app_ipc.h
+@@ -26,9 +26,11 @@
+ #define APP_EVENT_REPORT_NOW      (1UL << 2)
+ #define APP_EVENT_MODE_CHANGE     (1UL << 3)
+ #define APP_EVENT_NETWORK_STARTED (1UL << 4)
++#define APP_EVENT_PARENT_LOST     (1UL << 5)
+ #define APP_ZB_COMMAND_PERMIT_JOIN 1U
+ #define APP_ZB_COMMAND_CONFIG_TEMP_REPORT 2U
+ #define APP_ZB_COMMAND_TEMP_RECEIVED 3U
++#define APP_ZB_COMMAND_FLOW_RECEIVED 4U
+ 
+ /* Comando de BridgeTask hacia ZbAppTask */
+ typedef struct
+@@ -41,6 +43,8 @@
+     uint64_t ieee_address;
+     int16_t temperature_centi_c;
+     bool temperature_valid;
++    uint32_t flow_ml_min;
++    bool flow_valid;
+ } AppZbCommand;
+ 
+ /* Objetos presentes en ambos roles */
+@@ -79,6 +83,8 @@
+ void AppIpc_SetDeviceIeee(uint64_t ieee);
+ bool AppIpc_NetworkStarted(void);
+ void AppIpc_MarkNetworkStarted(void);
++void AppIpc_MarkNetworkStopped(void);
++bool AppIpc_SaveSlaveFlow(uint64_t ieee, uint32_t flow_ml_min, bool valid);
+ 
+ bool AppIpc_RequestPermitJoin(uint8_t seconds, uint8_t seq);
+ 
+--- a/Core/Inc/app_types.h
++++ b/Core/Inc/app_types.h
+@@ -101,7 +101,11 @@
+     AppActuatorState actuators;
+     AppRuntimeState state;
+     AppFaultFlags faults;
+-    uint32_t updated_at_ms; /* Reloj local del equipo que guarda este estado. */
++    uint32_t updated_at_ms; /* Ultimo reporte de cualquier medicion. */
++    /* Master: cada variable tiene su propia frescura. No se persisten muestras. */
++    uint32_t temperature_report_at_ms;
++    uint32_t flow_report_at_ms;
++    AppSampleValidFlags reports_seen; /* Incluye reportes recibidos no validos. */
+ } AppStatus;
+ 
+ /* Comprobar rangos, valores enum y destino ANTES de aplicar un comando.
+--- a/Core/Inc/app_uart_protocol.h
++++ b/Core/Inc/app_uart_protocol.h
+@@ -15,6 +15,8 @@
+ #define APP_UART_PONG 0x03U
+ #define APP_UART_TELEMETRY_TEMP 0x10U
+ #define APP_UART_DEVICE_JOINED 0x11U
++/* Extension compatible: la trama TEMP 0x10 conserva sus 21 bytes. */
++#define APP_UART_TELEMETRY_FLOW 0x12U
+ #define APP_UART_PERMIT_JOIN 0x20U
+ #define APP_UART_SET_SETPOINT 0x21U /* Reserved; this version returns NACK. */
+ #define APP_UART_ACK 0x7EU
+--- /dev/null
++++ b/Core/Inc/app_zb_rejoin.h
+@@ -0,0 +1,47 @@
++#ifndef FROSTKERN_APP_ZB_REJOIN_H
++#define FROSTKERN_APP_ZB_REJOIN_H
++#include <stdbool.h>
++#include <stdint.h>
++/* State belongs exclusively to ZbAppTask; callbacks only post results/events.
++ * After a missing callback, reset/restore before starting another request. */
++#define APP_ZB_REJOIN_TIMEOUT_MS 65000U
++typedef struct {
++    bool lost, pending;
++    uint32_t token, next_token, due_ms;
++    uint8_t failures;
++} AppZbRejoin;
++typedef enum { APP_ZB_REJOIN_NONE, APP_ZB_REJOIN_SEND,
++               APP_ZB_REJOIN_RESTORE } AppZbRejoinAction;
++static inline void AppZbRejoin_Lost(AppZbRejoin *s, uint32_t now)
++{
++    if (!s->lost) { s->lost = true; s->due_ms = now; s->failures = 0U; }
++}
++static inline void AppZbRejoin_Ready(AppZbRejoin *s)
++{ s->lost = false; s->pending = false; s->token = 0U; s->failures = 0U; }
++static inline bool AppZbRejoin_Complete(AppZbRejoin *s, uint32_t token,
++                                      bool ok, uint32_t now)
++{
++    if (!s->pending || token != s->token) { return false; }
++    s->pending = false;
++    if (ok) { AppZbRejoin_Ready(s); }
++    else {
++        uint32_t delay = s->failures < 6U ? (1000U << s->failures) : 60000U;
++        if (s->failures < 6U) { ++s->failures; }
++        s->due_ms = now + delay;
++    }
++    return true;
++}
++static inline AppZbRejoinAction AppZbRejoin_Next(AppZbRejoin *s, uint32_t now)
++{
++    if (!s->lost || (int32_t)(now - s->due_ms) < 0) { return APP_ZB_REJOIN_NONE; }
++    if (s->pending || s->failures >= 5U) {
++        s->pending = false; s->token = 0U;
++        return APP_ZB_REJOIN_RESTORE;
++    }
++    s->pending = true;
++    if (++s->next_token == 0U) { ++s->next_token; }
++    s->token = s->next_token;
++    s->due_ms = now + APP_ZB_REJOIN_TIMEOUT_MS;
++    return APP_ZB_REJOIN_SEND;
++}
++#endif
+--- a/Core/Src/app_ipc.c
++++ b/Core/Src/app_ipc.c
+@@ -12,7 +12,7 @@
+ 
+ /* Cantidad de mensajes que caben en estas colas */
+ #define CONFIG_QUEUE_LENGTH     4U
+-#define ZB_COMMAND_QUEUE_LENGTH 4U
++#define ZB_COMMAND_QUEUE_LENGTH 16U
+ 
+ /* Objetos comunes a Master y Slave */
+ QueueHandle_t qZbCommand = NULL;
+@@ -210,6 +210,13 @@
+     }
+ 
+     xEventGroupSetBits(evSystem, APP_EVENT_NETWORK_STARTED);
++}
++
++void AppIpc_MarkNetworkStopped(void)
++{
++    if (evSystem != NULL) {
++        xEventGroupClearBits(evSystem, APP_EVENT_NETWORK_STARTED);
++    }
+ }
+ 
+ bool AppIpc_NetworkStarted(void)
+@@ -430,9 +437,10 @@
+             ~APP_SAMPLE_VALID_TEMP;
+     }
+ 
+-    entry->updated_at_ms =
+-        (uint32_t)xTaskGetTickCount() *
+-        (uint32_t)portTICK_PERIOD_MS;
++    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
++    entry->updated_at_ms = now;
++    entry->temperature_report_at_ms = now;
++    entry->reports_seen |= APP_SAMPLE_VALID_TEMP;
+ 
+     xSemaphoreGive(gStatusMutex);
+ 
+@@ -448,3 +456,30 @@
+ 
+ #endif
+ }
++
++bool AppIpc_SaveSlaveFlow(uint64_t ieee, uint32_t flow_ml_min, bool valid)
++{
++#if APP_IS_MASTER
++    uint8_t nodeId = AppIpc_RegisterSlave(ieee);
++    if (nodeId == APP_NODE_UNASSIGNED ||
++        xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE) {
++        return false;
++    }
++    AppStatus *entry = &gSlaveStatus[nodeId - 1U];
++    if (valid && flow_ml_min != UINT32_MAX) {
++        entry->latest_sample.flow_ml_min = flow_ml_min;
++        entry->latest_sample.valid |= APP_SAMPLE_VALID_FLOW;
++    } else {
++        entry->latest_sample.valid &= ~APP_SAMPLE_VALID_FLOW;
++    }
++    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
++    entry->updated_at_ms = now;
++    entry->flow_report_at_ms = now;
++    entry->reports_seen |= APP_SAMPLE_VALID_FLOW;
++    xSemaphoreGive(gStatusMutex);
++    return true;
++#else
++    (void)ieee; (void)flow_ml_min; (void)valid;
++    return false;
++#endif
++}
+--- a/Core/Src/app_uart_bridge.c
++++ b/Core/Src/app_uart_bridge.c
+@@ -207,8 +207,8 @@
+ 
+     uint8_t payload[21] = {APP_UART_PROTOCOL_VERSION, nodeId};
+     memcpy(&payload[2], status.device.ieee_address, 8U);
+-    bool seen = status.updated_at_ms != 0U;
+-    uint32_t age = seen ? NowMs() - status.updated_at_ms : UINT32_MAX;
++    bool seen = (status.reports_seen & APP_SAMPLE_VALID_TEMP) != 0U;
++    uint32_t age = seen ? NowMs() - status.temperature_report_at_ms : UINT32_MAX;
+     bool stale = seen && age > TEMP_STALE_MS;
+     bool valid = seen && !stale &&
+         (status.latest_sample.valid & APP_SAMPLE_VALID_TEMP) != 0U;
+@@ -217,9 +217,33 @@
+         (seen ? APP_UART_TEMP_REPORT_SEEN : 0U));
+     Put16(&payload[11], valid
+         ? (uint16_t)status.latest_sample.temperature_centi_c : 0U);
+-    Put32(&payload[13], status.updated_at_ms);
++    Put32(&payload[13], status.temperature_report_at_ms);
+     Put32(&payload[17], age);
+     (void)SendFrame(APP_UART_TELEMETRY_TEMP, txSequence++, payload, sizeof(payload));
++}
++
++static void PublishFlow(uint8_t nodeId)
++{
++    AppStatus status;
++    const uint8_t empty[8] = {0};
++    if (!AppIpc_ReadSlaveStatus(nodeId, &status) ||
++        memcmp(status.device.ieee_address, empty, sizeof(empty)) == 0) {
++        return;
++    }
++    uint8_t payload[23] = {APP_UART_PROTOCOL_VERSION, nodeId};
++    memcpy(&payload[2], status.device.ieee_address, 8U);
++    bool seen = (status.reports_seen & APP_SAMPLE_VALID_FLOW) != 0U;
++    uint32_t age = seen ? NowMs() - status.flow_report_at_ms : UINT32_MAX;
++    bool stale = seen && age > TEMP_STALE_MS;
++    bool valid = seen && !stale &&
++        (status.latest_sample.valid & APP_SAMPLE_VALID_FLOW) != 0U;
++    payload[10] = (uint8_t)((valid ? APP_UART_TEMP_VALID : 0U) |
++        (stale ? APP_UART_TEMP_STALE : 0U) |
++        (seen ? APP_UART_TEMP_REPORT_SEEN : 0U));
++    Put32(&payload[11], valid ? status.latest_sample.flow_ml_min : 0U);
++    Put32(&payload[15], status.flow_report_at_ms);
++    Put32(&payload[19], age);
++    (void)SendFrame(APP_UART_TELEMETRY_FLOW, txSequence++, payload, sizeof(payload));
+ }
+ 
+ static void BridgeTask(void *argument)
+@@ -277,6 +301,7 @@
+             PublishHeartbeat();
+             for (uint8_t id = 1U; id <= APP_SLAVE_COUNT; ++id) {
+                 PublishSlave(id);
++                PublishFlow(id);
+             }
+         }
+     }
+--- a/STM32_WPAN/App/app_zigbee.c
++++ b/STM32_WPAN/App/app_zigbee.c
+@@ -50,6 +50,8 @@
+ #include "app_ipc.h"
+ #include "app_zb_recovery.h"
+ #include "app_zb_persistence.h"
++#include "app_zb_rejoin.h"
++#include "zigbee.filter.h"
+ /* USER CODE END PI */
+ 
+ /* Public variables -----------------------------------------------------------*/
+@@ -126,6 +128,111 @@
+ #endif
+ 
+ /* USER CODE END PV */
++
++#if APP_IS_SLAVE
++typedef struct { uint32_t token; enum ZbStatusCodeT status; } AppRejoinResult;
++static AppZbRejoin slaveRejoin;
++static QueueHandle_t rejoinResults;
++static struct ZbMsgFilterT *parentFilter;
++static enum zb_msg_filter_rc APP_ZIGBEE_ParentEvent(struct ZigBeeT *zb,
++    uint32_t id, void *message, void *arg)
++{
++    (void)zb; (void)arg;
++    if (id == ZB_MSG_FILTER_STACK_EVENT && message != NULL) {
++        const struct ZbMsgStackEventT *event = message;
++        if (event->type == ZB_MSG_STACK_EVENT_PARENT_LINK_FAIL ||
++            event->type == ZB_MSG_STACK_EVENT_ATTEMPT_REJOIN) {
++            /* Stack callbacks do not call rejoin, reset or Flash APIs. */
++            if (evSystem != NULL) {
++                xEventGroupSetBits(evSystem, APP_EVENT_PARENT_LOST);
++            }
++            if (event->type == ZB_MSG_STACK_EVENT_ATTEMPT_REJOIN) {
++                return ZB_MSG_DISCARD; /* Application owns this rejoin. */
++            }
++        }
++    }
++    return ZB_MSG_CONTINUE;
++}
++static void APP_ZIGBEE_RejoinCallback(struct ZbNlmeJoinConfT *conf, void *arg)
++{
++    AppRejoinResult result = {(uint32_t)(uintptr_t)arg,
++        conf != NULL ? conf->status : ZB_ZDP_STATUS_TIMEOUT};
++    if (rejoinResults != NULL && xQueueSend(rejoinResults, &result, 0U) != pdPASS) {
++        LOG_ERROR_APP("[ZB-REJOIN] result queue full; timeout will restore saved network");
++    }
++}
++static void APP_ZIGBEE_ProcessSlaveRejoin(void)
++{
++    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
++    EventBits_t bits = xEventGroupClearBits(evSystem, APP_EVENT_PARENT_LOST);
++    if ((bits & APP_EVENT_PARENT_LOST) != 0U) {
++        if (!slaveRejoin.lost) {
++            LOG_INFO_APP("[ZB-REJOIN] parent lost; recovering the same network");
++        }
++        AppZbRejoin_Lost(&slaveRejoin, now);
++        AppIpc_MarkNetworkStopped();
++        stZigbeeAppInfo.bInitAfterJoin = false;
++    }
++    AppRejoinResult result;
++    while (rejoinResults != NULL && xQueueReceive(rejoinResults, &result, 0U) == pdPASS) {
++        bool ok = result.status == ZB_STATUS_SUCCESS;
++        if (!AppZbRejoin_Complete(&slaveRejoin, result.token, ok, now)) {
++            continue; /* Reject late callbacks from a previous request. */
++        }
++        if (ok) {
++            stZigbeeAppInfo.bInitAfterJoin = true;
++            AppIpc_MarkNetworkStarted();
++            AppZbPersistence_NetworkReady();
++            LOG_INFO_APP("[ZB-REJOIN] success, short address 0x%04X",
++                ZbShortAddress(stZigbeeAppInfo.pstZigbee));
++        } else {
++            LOG_ERROR_APP("[ZB-REJOIN] failed: 0x%02X; retry scheduled",
++                (unsigned int)result.status);
++        }
++    }
++    AppZbRejoinAction action = AppZbRejoin_Next(&slaveRejoin, now);
++    if (action == APP_ZB_REJOIN_SEND) {
++        LOG_INFO_APP("[ZB-REJOIN] requesting secure rejoin");
++        enum ZbStatusCodeT status = ZbStartupRejoin(stZigbeeAppInfo.pstZigbee,
++            APP_ZIGBEE_RejoinCallback, (void *)(uintptr_t)slaveRejoin.token);
++        if (status != ZB_STATUS_SUCCESS) {
++            (void)AppZbRejoin_Complete(&slaveRejoin, slaveRejoin.token, false, now);
++            LOG_ERROR_APP("[ZB-REJOIN] request refused: 0x%02X", (unsigned int)status);
++        }
++    } else if (action == APP_ZB_REJOIN_RESTORE) {
++        /* No second concurrent request if a callback disappeared. Reset first,
++         * then use the existing persistence startup/retry path. Do not erase
++         * the saved network or form a new network on the Slave. */
++        LOG_ERROR_APP("[ZB-REJOIN] retries exhausted or timed out; restoring saved network");
++        AppIpc_MarkNetworkStopped();
++        if (parentFilter != NULL) {
++            ZbMsgFilterRemove(stZigbeeAppInfo.pstZigbee, parentFilter);
++            parentFilter = NULL;
++        }
++        ZbReset(stZigbeeAppInfo.pstZigbee);
++        APP_ZIGBEE_NwkFormOrJoin();
++    }
++}
++#endif
++
++void APP_ZIGBEE_LinkReady(void)
++{
++#if APP_IS_SLAVE
++    if (rejoinResults == NULL) {
++        rejoinResults = xQueueCreate(4U, sizeof(AppRejoinResult));
++        if (rejoinResults == NULL) { Error_Handler(); return; }
++    }
++    if (parentFilter == NULL) {
++        parentFilter = ZbMsgFilterRegister(stZigbeeAppInfo.pstZigbee,
++            ZB_MSG_FILTER_STACK_EVENT, ZB_MSG_INTERNAL_PRIO + 1U,
++            APP_ZIGBEE_ParentEvent, NULL);
++        if (parentFilter == NULL) { Error_Handler(); return; }
++    }
++    AppZbRejoin_Ready(&slaveRejoin);
++    xEventGroupClearBits(evSystem, APP_EVENT_PARENT_LOST);
++    LOG_INFO_APP("[ZB-REJOIN] parent-loss recovery enabled");
++#endif
++}
+ 
+ /* Functions Definition ------------------------------------------------------*/
+ 
+@@ -480,16 +587,24 @@
+                 waitTicks);
+ 
+ #if APP_IS_SLAVE
+-        APP_ZIGBEE_UpdateTemperature();
++        APP_ZIGBEE_ProcessSlaveRejoin();
++        if (AppIpc_NetworkStarted()) {
++            APP_ZIGBEE_UpdateTemperature();
++            APP_ZIGBEE_UpdateFlow();
++        }
+ #else
++        APP_ZIGBEE_ProcessReportRecovery();
+         APP_ZIGBEE_ProcessTemperatureReportRetries();
++        APP_ZIGBEE_ProcessFlowReportRetries();
+ #if APP_NETWORK_RECOVERY_ENABLED
+         APP_ZIGBEE_ProcessRecovery();
+ #endif
+ #endif
+ 
+         /* Guardar solo cambios de pila/registro, nunca cada muestra UART. */
+-        AppZbPersistence_Process();
++        if (AppIpc_NetworkStarted()) {
++            AppZbPersistence_Process();
++        }
+ 
+         if (received != pdPASS)
+         {
+@@ -527,6 +642,7 @@
+                 APP_ZIGBEE_ConfigureTemperatureReports(
+                     nodeId,
+                     command.short_address);
++                APP_ZIGBEE_ConfigureFlowReports(nodeId, command.short_address);
+             }
+         }
+         else if (
+@@ -567,6 +683,23 @@
+                 }
+             }
+         }
++        else if (command.type == APP_ZB_COMMAND_FLOW_RECEIVED)
++        {
++            uint64_t ieee = command.ieee_address;
++            if (ieee == 0U && command.short_address < 0xFFF8U) {
++                ieee = ZbNwkAddrLookupExt(stZigbeeAppInfo.pstZigbee,
++                                         command.short_address);
++            }
++            if (!AppIpc_SaveSlaveFlow(ieee, command.flow_ml_min, command.flow_valid)) {
++                LOG_ERROR_APP("Could not save Slave flow");
++            } else if (command.flow_valid) {
++                LOG_INFO_APP("Flow report from " LOG_DISPLAY64() ": %lu mL/min",
++                    LOG_NUMBER64(ieee), (unsigned long)command.flow_ml_min);
++            } else {
++                LOG_INFO_APP("Flow report from " LOG_DISPLAY64() ": measurement unavailable",
++                    LOG_NUMBER64(ieee));
++            }
++        }
+         else
+         {
+             LOG_INFO_APP(
+--- a/STM32_WPAN/App/app_zigbee.h
++++ b/STM32_WPAN/App/app_zigbee.h
+@@ -63,6 +63,7 @@
+ 
+   /* USER CODE BEGIN ZigbeeAppInfo_t */
+   struct ZbZclClusterT *temperatureCluster;
++  struct ZbZclClusterT *flowCluster;
+   /* USER CODE END ZigbeeAppInfo_t */
+ 
+   struct ZbZclClusterT  * pstZbCluster[CLUSTER_NB_MAX];
+@@ -114,6 +115,12 @@
+ 
+ /* USER CODE BEGIN EFP */
+ void APP_ZIGBEE_UpdateTemperature(void);
++void APP_ZIGBEE_ConfigFlowEndpoint(void);
++void APP_ZIGBEE_UpdateFlow(void);
++void APP_ZIGBEE_ConfigureFlowReports(uint8_t nodeId, uint16_t shortAddress);
++void APP_ZIGBEE_ProcessFlowReportRetries(void);
++void APP_ZIGBEE_ProcessReportRecovery(void);
++void APP_ZIGBEE_LinkReady(void);
+ void APP_ZIGBEE_ConfigureTemperatureReports(
+     uint8_t nodeId, uint16_t shortAddress);
+ void APP_ZIGBEE_ProcessTemperatureReportRetries(void);
+--- a/STM32_WPAN/App/app_zigbee_endpoint.c
++++ b/STM32_WPAN/App/app_zigbee_endpoint.c
+@@ -197,6 +197,7 @@
+   /* USER CODE BEGIN APP_ZIGBEE_ApplicationStart */
+ 	AppIpc_SetDeviceIeee(ZbExtendedAddress(stZigbeeAppInfo.pstZigbee));
+ 	AppIpc_MarkNetworkStarted();
++  APP_ZIGBEE_LinkReady();
+   AppZbPersistence_NetworkReady();
+   uint64_t savedEpid = 0U;
+   uint16_t savedPan = 0U;
+@@ -311,6 +312,7 @@
+         stZigbeeAppInfo.temperatureCluster, APP_ZIGBEE_ReportSentDiagnostic);
+ #endif
+ 
++  APP_ZIGBEE_ConfigFlowEndpoint();
+   /* USER CODE END APP_ZIGBEE_ConfigEndpoints2 */
+ }
+ 
+--- /dev/null
++++ b/STM32_WPAN/App/app_zigbee_flow.c
+@@ -0,0 +1,351 @@
++/* FrostKern private flow cluster. Keeps the tested temperature path intact. */
++#include <stdint.h>
++#include <stdbool.h>
++#include "app_common.h"
++#include "main.h"
++#include "app_zigbee.h"
++#include "app_ipc.h"
++#include "app_network_config.h"
++#include "app_flow_report.h"
++#include "app_zb_report_retry.h"
++#include "log_module.h"
++#include "task.h"
++#include "zigbee.aps.h"
++#include "zigbee.nwk.h"
++#include "zcl/zcl.h"
++#define APP_ZIGBEE_ENDPOINT APP_NETWORK_ENDPOINT
++#if APP_IS_MASTER
++
++_Static_assert(APP_SLAVE_COUNT == APP_ZB_REPORT_RETRY_PEERS,
++               "Report retry slots must match the Slave count");
++_Static_assert(sizeof(uintptr_t) >= sizeof(uint32_t),
++               "Callback ticket must fit in uintptr_t");
++
++typedef struct
++{
++    uint32_t token;
++    uint32_t aps_status;
++    uint32_t zcl_status;
++    uint8_t attribute_status;
++    bool accepted;
++} AppFlowReportConfigResult;
++
++static AppZbReportRetry flowReportRetries;
++static QueueHandle_t flowReportResults = NULL;
++
++#endif
++
++#if APP_IS_MASTER
++static void APP_ZIGBEE_FlowReport(struct ZbZclClusterT *cluster,
++    struct ZbZclHeaderT *header, struct ZbApsdeDataIndT *data_ind,
++    uint16_t attribute_id, enum ZclDataTypeT data_type,
++    const uint8_t *payload, uint16_t length, bool *discard)
++{
++    (void)cluster; (void)header; (void)discard;
++    if (data_ind == NULL || payload == NULL || qZbCommand == NULL ||
++        data_ind->src.endpoint != APP_NETWORK_ENDPOINT ||
++        data_ind->dst.endpoint != APP_NETWORK_ENDPOINT ||
++        attribute_id != APP_ZB_FLOW_ATTRIBUTE_ID ||
++        data_type != ZCL_DATATYPE_UNSIGNED_32BIT || length < 4U) {
++        return;
++    }
++    /* in_len can include subsequent records, as in the temperature fix. */
++    uint32_t value = (uint32_t)payload[0] | ((uint32_t)payload[1] << 8U) |
++        ((uint32_t)payload[2] << 16U) | ((uint32_t)payload[3] << 24U);
++    AppZbCommand command = {0};
++    command.type = APP_ZB_COMMAND_FLOW_RECEIVED;
++    command.flow_ml_min = value;
++    command.flow_valid = value != APP_ZB_FLOW_UNKNOWN;
++    command.short_address = 0xFFFFU;
++    if (data_ind->src.mode == ZB_APSDE_ADDRMODE_EXT) {
++        command.ieee_address = data_ind->src.extAddr;
++    } else if (data_ind->src.mode == ZB_APSDE_ADDRMODE_SHORT) {
++        command.short_address = data_ind->src.nwkAddr;
++    } else { return; }
++    if (xQueueSend(qZbCommand, &command, 0U) != pdPASS) {
++        LOG_ERROR_APP("Flow report dropped: command queue full");
++    }
++}
++#endif
++
++void APP_ZIGBEE_ConfigFlowEndpoint(void)
++{
++#if APP_IS_MASTER
++    enum ZbZclDirectionT direction = ZCL_DIRECTION_TO_CLIENT;
++#else
++    enum ZbZclDirectionT direction = ZCL_DIRECTION_TO_SERVER;
++#endif
++    struct ZbZclClusterT *cluster = ZbZclClusterAlloc(
++        stZigbeeAppInfo.pstZigbee, sizeof(struct ZbZclClusterT),
++        (enum ZbZclClusterIdT)APP_ZB_FLOW_CLUSTER_ID, APP_NETWORK_ENDPOINT, direction);
++    if (cluster == NULL) { Error_Handler(); return; }
++    stZigbeeAppInfo.flowCluster = cluster;
++#if APP_IS_SLAVE
++    /* Static lifetime: ZbZclAttrAppendList retains this descriptor. The measured
++     * value is reportable but not persistable: never wear Flash per sample. */
++    static const struct ZbZclAttrT attrs[] = {{
++        .attributeId = APP_ZB_FLOW_ATTRIBUTE_ID,
++        .dataType = ZCL_DATATYPE_UNSIGNED_32BIT,
++        .flags = ZCL_ATTR_FLAG_REPORTABLE,
++        .reporting = {.interval_min = 60U, .interval_max = 300U}
++    }};
++    if (ZbZclAttrAppendList(cluster, attrs, ZCL_ATTR_LIST_LEN(attrs)) != ZCL_STATUS_SUCCESS ||
++        ZbZclAttrIntegerWrite(cluster, APP_ZB_FLOW_ATTRIBUTE_ID,
++                             APP_ZB_FLOW_UNKNOWN) != ZCL_STATUS_SUCCESS) {
++        ZbZclClusterFree(cluster); stZigbeeAppInfo.flowCluster = NULL;
++        Error_Handler(); return;
++    }
++#else
++    cluster->report = APP_ZIGBEE_FlowReport;
++#endif
++    if (ZbZclClusterAttach(cluster) != ZCL_STATUS_SUCCESS ||
++        !ZbZclClusterEndpointRegister(cluster)) {
++        ZbZclClusterFree(cluster); stZigbeeAppInfo.flowCluster = NULL;
++        Error_Handler(); return;
++    }
++    LOG_INFO_APP("FrostKern flow cluster 0xFC10 on endpoint %u (mL/min)",
++                 (unsigned int)APP_NETWORK_ENDPOINT);
++}
++
++void APP_ZIGBEE_UpdateFlow(void)
++{
++#if APP_IS_SLAVE
++    AppStatus localStatus;
++    if (stZigbeeAppInfo.flowCluster == NULL || !AppIpc_ReadLocalStatus(&localStatus)) {
++        return;
++    }
++    uint32_t value = AppFlowReport_Value(&localStatus.latest_sample, HAL_GetTick());
++    enum ZclStatusCodeT status = ZbZclAttrIntegerWrite(
++        stZigbeeAppInfo.flowCluster, APP_ZB_FLOW_ATTRIBUTE_ID, value);
++    if (status != ZCL_STATUS_SUCCESS) {
++        LOG_ERROR_APP("Flow attribute update failed: 0x%02X", (unsigned int)status);
++    }
++    static bool logged;
++    static uint32_t lastLog;
++    uint32_t now = HAL_GetTick();
++    if (!logged || (uint32_t)(now - lastLog) >= 10000U) {
++        logged = true; lastLog = now;
++        unsigned int bindings = ZbApsBindSrcCount(stZigbeeAppInfo.pstZigbee,
++            APP_NETWORK_ENDPOINT, APP_ZB_FLOW_CLUSTER_ID);
++        if (value == APP_ZB_FLOW_UNKNOWN) {
++            LOG_INFO_APP("[ZB-FLOW SLAVE] Q=unavailable bindings=%u", bindings);
++        } else {
++            LOG_INFO_APP("[ZB-FLOW SLAVE] Q=%lu mL/min bindings=%u",
++                (unsigned long)value, bindings);
++        }
++    }
++#endif
++}
++
++#if APP_IS_MASTER
++
++static uint32_t APP_ZIGBEE_ReportRetryNowMs(void)
++{
++    return (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
++}
++
++static void APP_ZIGBEE_FlowReportConfigCallback(
++    struct ZbZclCommandRspT *response,
++    void *argument)
++{
++    /* The argument is a request ticket, never a pointer to a stack variable. */
++    AppFlowReportConfigResult result = {0};
++    result.token = (uint32_t)(uintptr_t)argument;
++    result.aps_status = response != NULL
++        ? (uint32_t)response->aps_status : UINT32_MAX;
++    result.zcl_status = response != NULL
++        ? (uint32_t)response->status : UINT32_MAX;
++    result.attribute_status = 0xFFU;
++
++    if (response != NULL && response->payload != NULL && response->length > 0U)
++    {
++        result.attribute_status = response->payload[0];
++    }
++
++    result.accepted =
++        response != NULL &&
++        response->aps_status == ZB_STATUS_SUCCESS &&
++        response->status == ZCL_STATUS_SUCCESS &&
++        response->hdr.cmdId == ZCL_COMMAND_CONFIG_REPORTING_RESPONSE &&
++        response->payload != NULL &&
++        response->length == 1U &&
++        response->payload[0] == ZCL_STATUS_SUCCESS;
++
++    /* Callback runs in the ST stack task. Do not call Zigbee APIs or wait here. */
++    if (flowReportResults == NULL ||
++        xQueueSend(flowReportResults, &result, 0U) != pdPASS)
++    {
++        LOG_ERROR_APP("Flow config response queue full; deadline will recover");
++    }
++}
++
++static enum ZclStatusCodeT APP_ZIGBEE_SendFlowReportConfig(
++    uint16_t shortAddress,
++    uint32_t token)
++{
++    if (stZigbeeAppInfo.flowCluster == NULL)
++    {
++        return ZCL_STATUS_FAILURE;
++    }
++
++    struct ZbZclAttrReportConfigT config = {0};
++    config.dst.mode = ZB_APSDE_ADDRMODE_SHORT;
++    config.dst.endpoint = APP_ZIGBEE_ENDPOINT;
++    config.dst.nwkAddr = shortAddress;
++    config.num_records = 1U;
++    config.record_list[0].direction = ZCL_REPORT_DIRECTION_NORMAL;
++    config.record_list[0].attr_id = APP_ZB_FLOW_ATTRIBUTE_ID;
++    config.record_list[0].attr_type = ZCL_DATATYPE_UNSIGNED_32BIT;
++    config.record_list[0].min = 2U;
++    config.record_list[0].max = 10U;
++    config.record_list[0].change = 100.0;
++
++    return ZbZclAttrReportConfigReq(
++        stZigbeeAppInfo.flowCluster,
++        &config,
++        APP_ZIGBEE_FlowReportConfigCallback,
++        (void *)(uintptr_t)token);
++}
++
++#endif
++
++void APP_ZIGBEE_ConfigureFlowReports(
++    uint8_t nodeId,
++    uint16_t shortAddress)
++{
++#if APP_IS_MASTER
++    if (nodeId == 0U || nodeId > APP_SLAVE_COUNT ||
++        shortAddress == 0U || shortAddress >= 0xFFF8U)
++    {
++        LOG_ERROR_APP("Invalid flow report config destination");
++        return;
++    }
++
++    if (flowReportResults == NULL)
++    {
++        flowReportResults = xQueueCreate(
++            8U, sizeof(AppFlowReportConfigResult));
++        if (flowReportResults == NULL)
++        {
++            Error_Handler();
++            return;
++        }
++        AppZbReportRetry_Init(&flowReportRetries);
++    }
++
++    if (AppZbReportRetry_Schedule(&flowReportRetries,
++            nodeId, shortAddress, APP_ZIGBEE_ReportRetryNowMs()))
++    {
++        LOG_INFO_APP("Slave %u: flow report config scheduled in 20 s",
++                     (unsigned int)nodeId);
++    }
++#else
++    (void)nodeId;
++    (void)shortAddress;
++#endif
++}
++
++void APP_ZIGBEE_ProcessFlowReportRetries(void)
++{
++#if APP_IS_MASTER
++    if (flowReportResults == NULL)
++    {
++        return;
++    }
++
++    AppFlowReportConfigResult result;
++    while (xQueueReceive(flowReportResults, &result, 0U) == pdPASS)
++    {
++        uint8_t nodeId = AppZbReportRetry_Complete(
++            &flowReportRetries, result.token, result.accepted,
++            APP_ZIGBEE_ReportRetryNowMs());
++        if (nodeId == 0U)
++        {
++            continue; /* Old response from a previous attempt or network address. */
++        }
++        if (result.accepted)
++        {
++            LOG_INFO_APP("Slave %u: flow report configuration accepted",
++                         (unsigned int)nodeId);
++        }
++        else
++        {
++            LOG_ERROR_APP("Slave %u: flow report config response failed, APS=%lu ZCL=%lu Attr=%u",
++                          (unsigned int)nodeId, (unsigned long)result.aps_status,
++                          (unsigned long)result.zcl_status,
++                          (unsigned int)result.attribute_status);
++        }
++    }
++
++    AppZbReportRetryAction action;
++    while (AppZbReportRetry_Next(&flowReportRetries,
++                                APP_ZIGBEE_ReportRetryNowMs(), &action))
++    {
++        if (action.type == APP_ZB_REPORT_ACTION_TIMEOUT)
++        {
++            LOG_ERROR_APP("Slave %u: flow report config attempt %u timed out",
++                          (unsigned int)action.node_id,
++                          (unsigned int)action.attempt);
++        }
++        else if (action.type == APP_ZB_REPORT_ACTION_EXHAUSTED)
++        {
++            LOG_ERROR_APP("Slave %u: flow report config stopped after 3 attempts",
++                          (unsigned int)action.node_id);
++        }
++        else
++        {
++            LOG_INFO_APP("Slave %u: flow report config attempt %u/3 to 0x%04X",
++                         (unsigned int)action.node_id,
++                         (unsigned int)action.attempt,
++                         (unsigned int)action.short_address);
++
++            enum ZclStatusCodeT status = APP_ZIGBEE_SendFlowReportConfig(
++                action.short_address, action.token);
++
++            if (status != ZCL_STATUS_SUCCESS)
++            {
++                LOG_ERROR_APP("Slave %u: flow report config could not be sent, status=%u",
++                              (unsigned int)action.node_id,
++                              (unsigned int)status);
++                (void)AppZbReportRetry_Complete(&flowReportRetries,
++                    action.token, false, APP_ZIGBEE_ReportRetryNowMs());
++            }
++        }
++    }
++#endif
++}
++
++/* Restored devices may retain the temperature binding but not the newly added
++ * flow binding. Reconfigure missing streams periodically without erasing NVM. */
++void APP_ZIGBEE_ProcessReportRecovery(void)
++{
++#if APP_IS_MASTER
++    static bool checked;
++    static uint32_t lastCheck;
++    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
++    if (!AppIpc_NetworkStarted() || (!checked && now < 60000U) ||
++        (checked && (uint32_t)(now - lastCheck) < 120000U)) {
++        return;
++    }
++    checked = true; lastCheck = now;
++    for (uint8_t id = 1U; id <= APP_SLAVE_COUNT; ++id) {
++        AppStatus status;
++        if (!AppIpc_ReadSlaveStatus(id, &status)) { continue; }
++        uint64_t ieee = 0U;
++        for (unsigned i = 0U; i < 8U; ++i) {
++            ieee = (ieee << 8U) | status.device.ieee_address[i];
++        }
++        if (ieee == 0U || ieee == UINT64_MAX) { continue; }
++        uint16_t address = ZbNwkAddrLookupNwk(stZigbeeAppInfo.pstZigbee, ieee);
++        if (address == 0U || address >= 0xFFF8U) { continue; }
++        if ((status.reports_seen & APP_SAMPLE_VALID_TEMP) == 0U ||
++            (uint32_t)(now - status.temperature_report_at_ms) > 180000U) {
++            APP_ZIGBEE_ConfigureTemperatureReports(id, address);
++        }
++        if ((status.reports_seen & APP_SAMPLE_VALID_FLOW) == 0U ||
++            (uint32_t)(now - status.flow_report_at_ms) > 30000U) {
++            APP_ZIGBEE_ConfigureFlowReports(id, address);
++        }
++    }
++#endif
++}

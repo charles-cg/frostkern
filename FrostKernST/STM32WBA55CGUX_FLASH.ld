@@ -47,7 +47,8 @@ MEMORY
 {
   /* RAM1 + RAM2 contiguas, como el ejemplo WBA55 Zigbee FreeRTOS de ST. */
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
-  FLASH  (rx)     : ORIGIN = 0x08000000,   LENGTH = 1024K
+  FLASH  (rx)     : ORIGIN = 0x08000000,   LENGTH = 1000K
+  ZB_NVM (r) : ORIGIN = 0x080FA000, LENGTH = 24K
 }
 
 /* Sections */
@@ -187,3 +188,8 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
+/* Zona exclusiva de persistencia: sin seccion cargable ni borrado al programar. */
+__zb_nvm_start__ = ORIGIN(ZB_NVM);
+__zb_nvm_end__ = ORIGIN(ZB_NVM) + LENGTH(ZB_NVM);
+ASSERT(__zb_nvm_start__ == 0x080FA000, "Invalid Zigbee NVM base")
+ASSERT(__zb_nvm_end__ == 0x08100000, "Invalid Zigbee NVM end")

@@ -31,6 +31,7 @@ BaseType_t xTaskCreate(void (*fn)(void *), const char *name, uint32_t depth,
     *handle = &queueMarker; ++createCount; return pdPASS;
 }
 TickType_t xTaskGetTickCount(void) { return fakeTicks; }
+void vTaskDelay(TickType_t ticks) { fakeTicks += ticks; }
 uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks)
 { (void)ticks; uint32_t old = notification; if (clear) notification = 0; return old; }
 void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *w)
@@ -102,6 +103,8 @@ int main(void)
     PublishSlave(1U); assert(capturedCount == before); /* Unknown IEEE: no fake reading. */
     fakeStatus[0].device.ieee_address[7] = 9U;
     fakeStatus[0].updated_at_ms = 500U;
+    fakeStatus[0].temperature_report_at_ms = 500U;
+    fakeStatus[0].reports_seen = APP_SAMPLE_VALID_TEMP;
     fakeStatus[0].latest_sample.valid = APP_SAMPLE_VALID_TEMP;
     fakeStatus[0].latest_sample.temperature_centi_c = -1250;
     PublishSlave(1U);
@@ -118,12 +121,22 @@ int main(void)
     fakeTicks = 100U; fakeStatus[0].latest_sample.valid = 0;
     PublishSlave(1U); assert(Last()->payload[10] == APP_UART_TEMP_REPORT_SEEN);
     fakeStatus[0].updated_at_ms = 0;
+    fakeStatus[0].reports_seen = 0U;
     PublishSlave(1U); assert(Last()->payload[10] == 0U);
     assert(Read32(&Last()->payload[17]) == UINT32_MAX);
     fakeStatus[0].updated_at_ms = UINT32_MAX - 99U;
+    fakeStatus[0].temperature_report_at_ms = UINT32_MAX - 99U;
+    fakeStatus[0].reports_seen = APP_SAMPLE_VALID_TEMP;
     fakeStatus[0].latest_sample.valid = APP_SAMPLE_VALID_TEMP;
     PublishSlave(1U); assert(Read32(&Last()->payload[17]) == 1100U);
 
+    fakeStatus[0].reports_seen |= APP_SAMPLE_VALID_FLOW;
+    fakeStatus[0].flow_report_at_ms = 1000U;
+    fakeStatus[0].latest_sample.valid |= APP_SAMPLE_VALID_FLOW;
+    fakeStatus[0].latest_sample.flow_ml_min = 7500U;
+    PublishFlow(1U);
+    assert(Last()->type == APP_UART_TELEMETRY_FLOW && Last()->length == 23U);
+    assert(Last()->payload[10] == 5U && Read32(Last()->payload + 11) == 7500U);
     txCompleteEnabled = false; before = txErrors;
     assert(!SendFrame(APP_UART_PING, 1U, NULL, 0U));
     assert(txErrors == before + 1U && abortCount == 1U);

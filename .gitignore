@@ -1,0 +1,18 @@
+# STM32CubeIDE: generated build outputs and local workspace
+/FrostKernST/Master/
+/FrostKernST/Slave/
+/FrostKernST/Debug/
+/FrostKernST/Release/
+**/.metadata/
+
+# Obsolete embedded copy of the repository
+/FrostKernST/frostkern/
+
+# Arduino: private local Wi-Fi settings
+/ESP32/FrostKern_UART_Receiver/wifi_config.h
+
+# Python and desktop caches
+**/__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db

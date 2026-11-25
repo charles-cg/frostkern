@@ -6,4 +6,5 @@ typedef void *EventGroupHandle_t;
 EventGroupHandle_t xEventGroupCreate(void);
 EventBits_t xEventGroupGetBits(EventGroupHandle_t);
 EventBits_t xEventGroupSetBits(EventGroupHandle_t, EventBits_t);
+EventBits_t xEventGroupClearBits(EventGroupHandle_t, EventBits_t);
 #endif

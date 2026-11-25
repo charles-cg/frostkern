@@ -9,12 +9,28 @@
 #define APP_NETWORK_ENDPOINT                 17U
 #define APP_NETWORK_SED_TIMEOUT_CODE         1U /* Timeout 120 s; NO es intervalo de polling. */
 
-/* Solo para la prueba inicial: el coordinador admite altas durante 180 s
- * despues de formar la red. El boton/UART se integraran en la fase de tareas.
+/* El coordinador admite altas durante 180 s despues de formar la red.
+ * UART puede solicitar ventanas adicionales.
  * 0 desactiva la ventana automatica. No se abre indefinidamente.
  */
 #define APP_NETWORK_OPEN_JOIN_ON_BOOT        1U
 #define APP_NETWORK_PERMIT_JOIN_SECONDS      180U
+
+/* Recuperacion de Slaves conocidos tras un apagado/reinicio.
+ * Una plaza sin IEEE registrado no mantiene la red abierta.
+ */
+#define APP_NETWORK_RECOVERY_ENABLED          1U
+#define APP_NETWORK_RECOVERY_STALE_MS         180000U
+#define APP_NETWORK_RECOVERY_FIRST_REPORT_MS  180000U
+#define APP_NETWORK_RECOVERY_WINDOW_SECONDS   180U
+#define APP_NETWORK_RECOVERY_REFRESH_MS       60000U
+
+#if APP_NETWORK_RECOVERY_WINDOW_SECONDS == 0U || APP_NETWORK_RECOVERY_WINDOW_SECONDS > 254U
+#error "La ventana de recuperacion debe estar entre 1 y 254 segundos"
+#endif
+#if APP_NETWORK_RECOVERY_REFRESH_MS == 0U || APP_NETWORK_RECOVERY_REFRESH_MS >= (APP_NETWORK_RECOVERY_WINDOW_SECONDS * 1000U)
+#error "Renovar antes de que termine la ventana de recuperacion"
+#endif
 
 #if APP_IS_MASTER
 #define APP_NETWORK_ROLE_NAME                "MASTER / COORDINATOR / FFD"

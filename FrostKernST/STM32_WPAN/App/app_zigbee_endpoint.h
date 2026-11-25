@@ -62,7 +62,6 @@ extern "C" {
 /* Exported functions prototypes -------------------------------- */
 extern void       APP_ZIGBEE_ApplicationInit              ( void );
 extern void       APP_ZIGBEE_ApplicationStart             ( void );
-extern void       APP_ZIGBEE_PersistenceStartup           ( void );
 extern void       APP_ZIGBEE_ConfigEndpoints              ( void );
 extern bool       APP_ZIGBEE_ConfigGroupAddr              ( void );
 

@@ -76,3 +76,6 @@ uint32_t ulTaskNotifyTake(BaseType_t clear,TickType_t wait)
 void vTaskNotifyGiveFromISR(TaskHandle_t task,BaseType_t *w)
 {assert(task!=NULL);++notification;*w=pdFALSE;}
 void Integration_Log(const char *format,...){(void)format;}
+
+EventBits_t xEventGroupClearBits(EventGroupHandle_t h, EventBits_t bits)
+{EventBits_t before=*(EventBits_t *)h;*(EventBits_t *)h &= ~bits;return before;}

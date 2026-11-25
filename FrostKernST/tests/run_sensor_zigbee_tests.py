@@ -37,6 +37,8 @@ def main():
         temp=Path(directory)
         endpoint=(ROOT/'STM32_WPAN/App/app_zigbee_endpoint.c').read_text()
         (temp/'zigbee_temperature_update.inc').write_text(function(endpoint,'APP_ZIGBEE_UpdateTemperature'))
+        flow=(ROOT/'STM32_WPAN/App/app_zigbee_flow.c').read_text()
+        (temp/'zigbee_flow_callback.inc').write_text(function(flow,'APP_ZIGBEE_FlowReport'))
         (temp/'zigbee_report_callback.inc').write_text(function(endpoint,'APP_ZIGBEE_TemperatureReport'))
         task=(ROOT/'STM32_WPAN/App/app_zigbee.c').read_text()
         marker='command.type == APP_ZB_COMMAND_TEMP_RECEIVED'
@@ -48,6 +50,15 @@ def main():
                 if depth==0:break
         (temp/'zigbee_master_dispatch.inc').write_text(
             'static void Integration_DispatchTemperature(AppZbCommand command)\n'+task[start:end+1]+'\n')
+        flow_start=task.index('{',task.index('command.type == APP_ZB_COMMAND_FLOW_RECEIVED'))
+        depth=0
+        for flow_end in range(flow_start,len(task)):
+            if task[flow_end]=='{':depth+=1
+            elif task[flow_end]=='}':
+                depth-=1
+                if depth==0:break
+        (temp/'zigbee_flow_dispatch.inc').write_text(
+            'static void Integration_DispatchFlow(AppZbCommand command)\n'+task[flow_start:flow_end+1]+'\n')
         flags=['gcc','-std=c11','-Wall','-Wextra','-Werror','-pedantic','-g']
         if os.environ.get('FROSTKERN_SANITIZE')=='1':
             flags+=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
@@ -74,6 +85,11 @@ def main():
         assert data[0]['ieee']=='00124B000ABCDEF0'
         assert any(d['ieee']=='00124B000ABCDEF1' for d in data)
         assert any(not d['temperature_valid'] for d in data)
+        flow=[probe.describe(f) for f in frames if f[0]==0x12]
+        assert any(d['flow_valid'] and d['flow_ml_min']==7500 for d in flow)
+        assert any(d['flow_valid'] and d['flow_ml_min']==0 for d in flow)
+        assert any(not d['flow_valid'] and d['stale'] for d in flow)
+        assert any(d['ieee']=='00124B000ABCDEF1' and d['flow_valid'] for d in flow)
         print('PIPELINE_PC_PASS: original ADC sample -> real shared snapshot -> ZCL attribute; report callback -> real Master IPC -> actual UART encoder -> independent Python decoder.')
         print('This result uses fake HAL/SDK/RTOS. Live RF reports remain a separate board test.')
 

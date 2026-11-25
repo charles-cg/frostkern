@@ -1,0 +1,200 @@
+--- a/STM32_WPAN/App/app_zigbee_endpoint.c
++++ b/STM32_WPAN/App/app_zigbee_endpoint.c
+@@ -48,6 +48,7 @@
+ #include "app_ipc.h"
+ #include "app_zb_report_retry.h"
+ #include "app_temperature_report.h"
++#include "zigbee.aps.h"
+ #include "task.h"
+ #include "zcl/general/zcl.temp.meas.h"
+ /* USER CODE END PI */
+@@ -66,6 +67,10 @@
+ #define APP_ZIGBEE_CLUSTER_NAME           "OnOff Server"
+ 
+ /* USER CODE BEGIN PD */
++/* Diagnostic logs only: no fake samples, forced reports or timer changes. */
++#ifndef APP_ZIGBEE_REPORT_DIAGNOSTICS
++#define APP_ZIGBEE_REPORT_DIAGNOSTICS 1
++#endif
+ /* Valores provisionales del ejemplo de ST. */
+ #define APP_ZB_TEMP_MIN_CENTI_C 100
+ #define APP_ZB_TEMP_MAX_CENTI_C 10000
+@@ -124,6 +129,9 @@
+ };
+ 
+ /* USER CODE BEGIN PFP */
++#if APP_IS_SLAVE && APP_ZIGBEE_REPORT_DIAGNOSTICS
++static void APP_ZIGBEE_ReportSentDiagnostic(struct ZbZclClusterT *cluster);
++#endif
+ #if APP_IS_MASTER
+ 
+ static void APP_ZIGBEE_TemperatureReport(
+@@ -165,6 +173,9 @@
+   stZigbeeAppInfo.eStartupControl = ZbStartTypeJoin;
+ #endif
+   LOG_INFO_APP( "FrostKern role: %s", APP_NETWORK_ROLE_NAME );
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++  LOG_INFO_APP("[ZB-DIAG] report diagnostics enabled");
++#endif
+ 
+   /* USER CODE END APP_ZIGBEE_ApplicationInit */
+ 
+@@ -280,6 +291,9 @@
+ #if APP_IS_MASTER
+     stZigbeeAppInfo.temperatureCluster->report =
+         APP_ZIGBEE_TemperatureReport;
++#elif APP_ZIGBEE_REPORT_DIAGNOSTICS
++    ZbZclClusterReportConfirmCallbackAttach(
++        stZigbeeAppInfo.temperatureCluster, APP_ZIGBEE_ReportSentDiagnostic);
+ #endif
+ 
+   /* USER CODE END APP_ZIGBEE_ConfigEndpoints2 */
+@@ -439,6 +453,15 @@
+ }
+ 
+ /* USER CODE BEGIN FD_LOCAL_FUNCTIONS */
++#if APP_IS_SLAVE && APP_ZIGBEE_REPORT_DIAGNOSTICS
++static void APP_ZIGBEE_ReportSentDiagnostic(struct ZbZclClusterT *cluster)
++{
++    UNUSED(cluster);
++    /* A stack-side send callback is not proof that the Master received data. */
++    LOG_INFO_APP("[ZB-DIAG TX] report-confirm callback (check Master RX)");
++}
++#endif
++
+ #if APP_IS_MASTER
+ 
+ static void APP_ZIGBEE_TemperatureReport(
+@@ -459,12 +482,27 @@
+         (payload == NULL) ||
+         (qZbCommand == NULL))
+     {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        LOG_ERROR_APP("[ZB-DIAG RX] dropped: null data, payload or command queue");
++#endif
+         return;
+     }
++
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++    LOG_INFO_APP("[ZB-DIAG RX] src-mode=%u src-ep=%u dst-ep=%u attr=0x%04X type=0x%02X len=%u",
++                 (unsigned int)data_ind->src.mode,
++                 (unsigned int)data_ind->src.endpoint,
++                 (unsigned int)data_ind->dst.endpoint,
++                 (unsigned int)attribute_id, (unsigned int)data_type,
++                 (unsigned int)length);
++#endif
+ 
+     if ((data_ind->dst.endpoint != APP_ZIGBEE_ENDPOINT) ||
+         (data_ind->src.endpoint != APP_ZIGBEE_ENDPOINT))
+     {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        LOG_ERROR_APP("[ZB-DIAG RX] dropped: endpoint mismatch");
++#endif
+         return;
+     }
+ 
+@@ -472,6 +510,9 @@
+         (data_type != ZCL_DATATYPE_SIGNED_16BIT) ||
+         (length != 2U))
+     {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        LOG_ERROR_APP("[ZB-DIAG RX] dropped: attribute, type or length mismatch");
++#endif
+         return;
+     }
+ 
+@@ -485,6 +526,9 @@
+ 
+     if (status != ZCL_STATUS_SUCCESS)
+     {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        LOG_ERROR_APP("[ZB-DIAG RX] dropped: parse status=0x%02X", (unsigned int)status);
++#endif
+         return;
+     }
+ 
+@@ -509,6 +553,9 @@
+     }
+     else
+     {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        LOG_ERROR_APP("[ZB-DIAG RX] dropped: unsupported source address mode");
++#endif
+         return;
+     }
+ 
+@@ -517,6 +564,13 @@
+         LOG_ERROR_APP(
+             "Temperature report dropped: command queue full");
+     }
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++    else
++    {
++        LOG_INFO_APP("[ZB-DIAG RX] queued: temperature=%d valid=%u",
++                     (int)temperature, (unsigned int)command.temperature_valid);
++    }
++#endif
+ }
+ 
+ #endif
+@@ -527,9 +581,28 @@
+     AppStatus localStatus;
+     static AppTemperatureQuality previousQuality = APP_TEMPERATURE_NO_DATA;
+ 
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++    static bool diagnosticLogged = false;
++    static uint32_t lastDiagnosticMs = 0U;
++    uint32_t diagnosticNow = HAL_GetTick();
++    bool diagnosticDue = !diagnosticLogged ||
++        (uint32_t)(diagnosticNow - lastDiagnosticMs) >= 10000U;
++    if (diagnosticDue)
++    {
++        diagnosticLogged = true;
++        lastDiagnosticMs = diagnosticNow;
++    }
++#endif
++
+     if (stZigbeeAppInfo.temperatureCluster == NULL ||
+         !AppIpc_ReadLocalStatus(&localStatus))
+     {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        if (diagnosticDue)
++        {
++            LOG_ERROR_APP("[ZB-DIAG SLAVE] no cluster or shared snapshot unavailable");
++        }
++#endif
+         return;
+     }
+ 
+@@ -558,6 +631,31 @@
+         LOG_ERROR_APP("Temperature attribute update failed: 0x%02X",
+                       (unsigned int)result);
+     }
++
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++    if (diagnosticDue)
++    {
++        enum ZclDataTypeT storedType;
++        enum ZclStatusCodeT readStatus;
++        int16_t stored = (int16_t)ZbZclAttrIntegerRead(
++            stZigbeeAppInfo.temperatureCluster,
++            ZCL_TEMP_MEAS_ATTR_MEAS_VAL, &storedType, &readStatus);
++        uint8_t reportValue[2];
++        enum ZclStatusCodeT reportableStatus = ZbZclAttrRead(
++            stZigbeeAppInfo.temperatureCluster,
++            ZCL_TEMP_MEAS_ATTR_MEAS_VAL, NULL,
++            reportValue, sizeof(reportValue), true);
++        unsigned int bindings = ZbApsBindSrcCount(
++            stZigbeeAppInfo.pstZigbee, APP_ZIGBEE_ENDPOINT,
++            ZCL_CLUSTER_MEAS_TEMPERATURE);
++        LOG_INFO_APP("[ZB-DIAG SLAVE] sample=%d zcl=%d quality=%u age=%lu write=0x%02X read=0x%02X reportable=0x%02X bindings=%u",
++                     (int)localStatus.latest_sample.temperature_centi_c,
++                     (int)stored, (unsigned int)quality,
++                     (unsigned long)(diagnosticNow - localStatus.latest_sample.timestamp_ms),
++                     (unsigned int)result, (unsigned int)readStatus,
++                     (unsigned int)reportableStatus, bindings);
++    }
++#endif
+ #endif
+ }
+ 

@@ -26,9 +26,11 @@
 #define APP_EVENT_REPORT_NOW      (1UL << 2)
 #define APP_EVENT_MODE_CHANGE     (1UL << 3)
 #define APP_EVENT_NETWORK_STARTED (1UL << 4)
+#define APP_EVENT_PARENT_LOST     (1UL << 5)
 #define APP_ZB_COMMAND_PERMIT_JOIN 1U
 #define APP_ZB_COMMAND_CONFIG_TEMP_REPORT 2U
 #define APP_ZB_COMMAND_TEMP_RECEIVED 3U
+#define APP_ZB_COMMAND_FLOW_RECEIVED 4U
 
 /* Comando de BridgeTask hacia ZbAppTask */
 typedef struct
@@ -41,6 +43,8 @@ typedef struct
     uint64_t ieee_address;
     int16_t temperature_centi_c;
     bool temperature_valid;
+    uint32_t flow_ml_min;
+    bool flow_valid;
 } AppZbCommand;
 
 /* Objetos presentes en ambos roles */
@@ -79,6 +83,8 @@ void AppIpc_Init(void);
 void AppIpc_SetDeviceIeee(uint64_t ieee);
 bool AppIpc_NetworkStarted(void);
 void AppIpc_MarkNetworkStarted(void);
+void AppIpc_MarkNetworkStopped(void);
+bool AppIpc_SaveSlaveFlow(uint64_t ieee, uint32_t flow_ml_min, bool valid);
 
 bool AppIpc_RequestPermitJoin(uint8_t seconds, uint8_t seq);
 

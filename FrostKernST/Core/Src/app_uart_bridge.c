@@ -207,8 +207,8 @@ static void PublishSlave(uint8_t nodeId)
 
     uint8_t payload[21] = {APP_UART_PROTOCOL_VERSION, nodeId};
     memcpy(&payload[2], status.device.ieee_address, 8U);
-    bool seen = status.updated_at_ms != 0U;
-    uint32_t age = seen ? NowMs() - status.updated_at_ms : UINT32_MAX;
+    bool seen = (status.reports_seen & APP_SAMPLE_VALID_TEMP) != 0U;
+    uint32_t age = seen ? NowMs() - status.temperature_report_at_ms : UINT32_MAX;
     bool stale = seen && age > TEMP_STALE_MS;
     bool valid = seen && !stale &&
         (status.latest_sample.valid & APP_SAMPLE_VALID_TEMP) != 0U;
@@ -217,9 +217,33 @@ static void PublishSlave(uint8_t nodeId)
         (seen ? APP_UART_TEMP_REPORT_SEEN : 0U));
     Put16(&payload[11], valid
         ? (uint16_t)status.latest_sample.temperature_centi_c : 0U);
-    Put32(&payload[13], status.updated_at_ms);
+    Put32(&payload[13], status.temperature_report_at_ms);
     Put32(&payload[17], age);
     (void)SendFrame(APP_UART_TELEMETRY_TEMP, txSequence++, payload, sizeof(payload));
+}
+
+static void PublishFlow(uint8_t nodeId)
+{
+    AppStatus status;
+    const uint8_t empty[8] = {0};
+    if (!AppIpc_ReadSlaveStatus(nodeId, &status) ||
+        memcmp(status.device.ieee_address, empty, sizeof(empty)) == 0) {
+        return;
+    }
+    uint8_t payload[23] = {APP_UART_PROTOCOL_VERSION, nodeId};
+    memcpy(&payload[2], status.device.ieee_address, 8U);
+    bool seen = (status.reports_seen & APP_SAMPLE_VALID_FLOW) != 0U;
+    uint32_t age = seen ? NowMs() - status.flow_report_at_ms : UINT32_MAX;
+    bool stale = seen && age > TEMP_STALE_MS;
+    bool valid = seen && !stale &&
+        (status.latest_sample.valid & APP_SAMPLE_VALID_FLOW) != 0U;
+    payload[10] = (uint8_t)((valid ? APP_UART_TEMP_VALID : 0U) |
+        (stale ? APP_UART_TEMP_STALE : 0U) |
+        (seen ? APP_UART_TEMP_REPORT_SEEN : 0U));
+    Put32(&payload[11], valid ? status.latest_sample.flow_ml_min : 0U);
+    Put32(&payload[15], status.flow_report_at_ms);
+    Put32(&payload[19], age);
+    (void)SendFrame(APP_UART_TELEMETRY_FLOW, txSequence++, payload, sizeof(payload));
 }
 
 static void BridgeTask(void *argument)
@@ -238,7 +262,19 @@ static void BridgeTask(void *argument)
     }
     RestartReception();
     /* PB7 drives the ON input of the ESP32 TPS22918 load switch. */
-    HAL_GPIO_WritePin(ESP32_EN_GPIO_Port, ESP32_EN_Pin, GPIO_PIN_SET);
+    /* Habilitar primero la fuente de 5 V. */
+    HAL_GPIO_WritePin(
+        BOOST_EN_GPIO_Port,
+        BOOST_EN_Pin,
+        GPIO_PIN_SET);
+
+    vTaskDelay(pdMS_TO_TICKS(50U));
+
+    /* Conectar la alimentación a la ESP32. */
+    HAL_GPIO_WritePin(
+        ESP32_EN_GPIO_Port,
+        ESP32_EN_Pin,
+        GPIO_PIN_SET);
 
     TickType_t lastPublication = xTaskGetTickCount();
     TickType_t lastByte = lastPublication;
@@ -265,6 +301,7 @@ static void BridgeTask(void *argument)
             PublishHeartbeat();
             for (uint8_t id = 1U; id <= APP_SLAVE_COUNT; ++id) {
                 PublishSlave(id);
+                PublishFlow(id);
             }
         }
     }

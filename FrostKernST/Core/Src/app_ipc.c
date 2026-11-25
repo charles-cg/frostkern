@@ -12,7 +12,7 @@
 
 /* Cantidad de mensajes que caben en estas colas */
 #define CONFIG_QUEUE_LENGTH     4U
-#define ZB_COMMAND_QUEUE_LENGTH 4U
+#define ZB_COMMAND_QUEUE_LENGTH 16U
 
 /* Objetos comunes a Master y Slave */
 QueueHandle_t qZbCommand = NULL;
@@ -210,6 +210,13 @@ void AppIpc_MarkNetworkStarted(void)
     }
 
     xEventGroupSetBits(evSystem, APP_EVENT_NETWORK_STARTED);
+}
+
+void AppIpc_MarkNetworkStopped(void)
+{
+    if (evSystem != NULL) {
+        xEventGroupClearBits(evSystem, APP_EVENT_NETWORK_STARTED);
+    }
 }
 
 bool AppIpc_NetworkStarted(void)
@@ -430,9 +437,10 @@ bool AppIpc_SaveSlaveTemperature(
             ~APP_SAMPLE_VALID_TEMP;
     }
 
-    entry->updated_at_ms =
-        (uint32_t)xTaskGetTickCount() *
-        (uint32_t)portTICK_PERIOD_MS;
+    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+    entry->updated_at_ms = now;
+    entry->temperature_report_at_ms = now;
+    entry->reports_seen |= APP_SAMPLE_VALID_TEMP;
 
     xSemaphoreGive(gStatusMutex);
 
@@ -446,5 +454,32 @@ bool AppIpc_SaveSlaveTemperature(
 
     return false;
 
+#endif
+}
+
+bool AppIpc_SaveSlaveFlow(uint64_t ieee, uint32_t flow_ml_min, bool valid)
+{
+#if APP_IS_MASTER
+    uint8_t nodeId = AppIpc_RegisterSlave(ieee);
+    if (nodeId == APP_NODE_UNASSIGNED ||
+        xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE) {
+        return false;
+    }
+    AppStatus *entry = &gSlaveStatus[nodeId - 1U];
+    if (valid && flow_ml_min != UINT32_MAX) {
+        entry->latest_sample.flow_ml_min = flow_ml_min;
+        entry->latest_sample.valid |= APP_SAMPLE_VALID_FLOW;
+    } else {
+        entry->latest_sample.valid &= ~APP_SAMPLE_VALID_FLOW;
+    }
+    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+    entry->updated_at_ms = now;
+    entry->flow_report_at_ms = now;
+    entry->reports_seen |= APP_SAMPLE_VALID_FLOW;
+    xSemaphoreGive(gStatusMutex);
+    return true;
+#else
+    (void)ieee; (void)flow_ml_min; (void)valid;
+    return false;
 #endif
 }

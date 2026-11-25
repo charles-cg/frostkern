@@ -1,6 +1,6 @@
 # FrostKern UART v1 — STM32 Master ↔ ESP32
 
-Primera implementación del borrador UART del plan. Ambos extremos deben implementar este contrato. Este paquete contiene el lado STM32; no instala firmware en el ESP32 ni implementa Wi-Fi/backend.
+Contrato UART v1 extendido con caudal. El paquete incluye un receptor Arduino para XIAO ESP32-C5 y conexion Wi-Fi opcional; no incluye publicacion en un backend. La trama de temperatura conserva su formato.
 
 ## Enlace
 
@@ -45,6 +45,7 @@ Las publicaciones espontáneas usan el contador TX del Master. PONG, ACK y NACK 
 | 0x02 | PING | ESP32 → Master | Vacío. |
 | 0x03 | PONG | Master → ESP32 | version:u8, network_started:u8, uptime_ms:u32. |
 | 0x10 | TELEMETRY_TEMP | Master → ESP32 | 21 bytes, tabla siguiente. |
+| 0x12 | TELEMETRY_FLOW | Master → ESP32 | 23 bytes: ver extension de caudal al final. |
 | 0x11 | DEVICE_JOINED | Master → ESP32 | version:u8, node_id:u8, IEEE:8 bytes. |
 | 0x20 | PERMIT_JOIN | ESP32 → Master | seconds:u8, 0..254; 0 solicita cerrar el permiso. |
 | 0x21 | SET_SETPOINT | ESP32 → Master | Reservado: siempre NACK/UNSUPPORTED en esta versión. |
@@ -53,7 +54,7 @@ Las publicaciones espontáneas usan el contador TX del Master. PONG, ACK y NACK 
 
 HEARTBEAT se publica aproximadamente cada segundo. `network_started` indica que terminó la formación/unión inicial de Zigbee; no es una prueba de salud permanente del enlace.
 
-DEVICE_JOINED se emite una vez por IEEE observado desde el arranque del Master, antes de su primera telemetría. Es un anuncio de registro local, no una detección continua de conexión. Los IDs 1/2 aún se asignan en RAM según los dispositivos observados y no persisten al reiniciar. La aplicación debe identificar la placa por IEEE.
+DEVICE_JOINED se emite una vez por IEEE observado desde el arranque del Master, antes de su primera telemetría. Es un anuncio de registro local, no una detección continua de conexión. Los IDs 1/2 se asignan al registrar los dispositivos. Con persistencia valida, el Master restaura el registro IEEE de cada posicion al reiniciar. La aplicación debe identificar la placa por IEEE.
 
 ## HEARTBEAT, LEN=22
 
@@ -130,3 +131,27 @@ No conectar dos emisores TX al mismo RX durante la prueba. Usar una sola ruta ha
 - Borrador UART de `freertos-plan.html` del proyecto.
 - HAL UART de ST, commit usado por STM32CubeWBA v1.10.0: https://github.com/STMicroelectronics/stm32wbaxx-hal-driver/tree/c36d9aabc6068051ed27a3a683a6b4f35f04d815
 - USART2 y su IRQ ya existen en el proyecto. Se registran callbacks por handle cuando USE_HAL_UART_REGISTER_CALLBACKS=1; no se reemplazan callbacks globales de USART1.
+
+
+## TELEMETRY_FLOW, TYPE=0x12, LEN=23
+
+Extension aditiva: SOF/LEN/CRC y todas las tramas existentes conservan su formato.
+No usa la asignacion de tipos del documento de tu companero.
+
+| Offset PAYLOAD | Tipo | Campo |
+|---:|---|---|
+| 0 | u8 | version=1 |
+| 1 | u8 | node_id, 1 o 2 |
+| 2 | 8 bytes | IEEE, mas significativo primero |
+| 10 | u8 | flags: bit0 VALID, bit1 STALE, bit2 REPORT_SEEN |
+| 11 | u32 LE | caudal en mL/min; solo interpretar con VALID |
+| 15 | u32 LE | flow_report_at_ms del Master |
+| 19 | u32 LE | edad del ultimo reporte de CAUDAL; FFFFFFFF sin reporte |
+
+Temperatura y caudal usan tiempos de recepcion y bits REPORT_SEEN independientes.
+Cada trama se publica aproximadamente una vez por segundo, pero solo la llegada
+Zigbee de ESA medicion cambia su fecha. STALE se activa si su edad supera
+180000 ms, y entonces se desactiva VALID. Un dato recibido no valido tiene
+REPORT_SEEN=1, VALID=0. Un reporte a uptime=0 tambien cuenta como recibido.
+No interpretar los bytes de relleno cero de un dato no valido como una lectura.
+Un caudal valido de 0 mL/min SI representa un intervalo sin pulsos.

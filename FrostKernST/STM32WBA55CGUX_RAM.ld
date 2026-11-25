@@ -48,6 +48,7 @@ MEMORY
   RAM    (xrw)    : ORIGIN = 0x20008000,   LENGTH = 32K
   RAM2   (xrw)    : ORIGIN = 0x20010000,   LENGTH = 64K
   FLASH  (rx)     : ORIGIN = 0x20000000,   LENGTH = 32K
+  ZB_NVM (r) : ORIGIN = 0x080FA000, LENGTH = 24K
 }
 
 /* Sections */
@@ -187,3 +188,5 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
+__zb_nvm_start__ = ORIGIN(ZB_NVM);
+__zb_nvm_end__ = ORIGIN(ZB_NVM) + LENGTH(ZB_NVM);

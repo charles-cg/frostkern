@@ -1,0 +1,45 @@
+--- a/STM32_WPAN/App/app_zigbee_endpoint.c
++++ b/STM32_WPAN/App/app_zigbee_endpoint.c
+@@ -175,6 +175,9 @@
+   LOG_INFO_APP( "FrostKern role: %s", APP_NETWORK_ROLE_NAME );
+ #if APP_ZIGBEE_REPORT_DIAGNOSTICS
+   LOG_INFO_APP("[ZB-DIAG] report diagnostics enabled");
++#if APP_IS_MASTER
++  LOG_INFO_APP("[ZB-FIX] multi-attribute temperature reports enabled");
++#endif
+ #endif
+ 
+   /* USER CODE END APP_ZIGBEE_ApplicationInit */
+@@ -506,12 +509,26 @@
+         return;
+     }
+ 
+-    if ((attribute_id != ZCL_TEMP_MEAS_ATTR_MEAS_VAL) ||
+-        (data_type != ZCL_DATATYPE_SIGNED_16BIT) ||
+-        (length != 2U))
+-    {
+-#if APP_ZIGBEE_REPORT_DIAGNOSTICS
+-        LOG_ERROR_APP("[ZB-DIAG RX] dropped: attribute, type or length mismatch");
++    if (attribute_id != ZCL_TEMP_MEAS_ATTR_MEAS_VAL)
++    {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        /* Other records, e.g. AttributeReportingStatus (0xFFFE), are not measurements. */
++        LOG_INFO_APP("[ZB-DIAG RX] ignored: non-temperature attribute=0x%04X",
++                     (unsigned int)attribute_id);
++#endif
++        return;
++    }
++
++    /* ST passes the available payload length from the current attribute value.
++     * It may include subsequent attribute records. The signed-16 value needs
++     * at least two bytes; do not reject a valid report just because length > 2.
++     * ZbZclParseInteger reads only the value size implied by data_type.
++     */
++    if ((data_type != ZCL_DATATYPE_SIGNED_16BIT) ||
++        (length < 2U))
++    {
++#if APP_ZIGBEE_REPORT_DIAGNOSTICS
++        LOG_ERROR_APP("[ZB-DIAG RX] dropped: wrong temperature type or truncated value");
+ #endif
+         return;
+     }

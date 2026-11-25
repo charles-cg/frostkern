@@ -15,6 +15,8 @@
 #define APP_UART_PONG 0x03U
 #define APP_UART_TELEMETRY_TEMP 0x10U
 #define APP_UART_DEVICE_JOINED 0x11U
+/* Extension compatible: la trama TEMP 0x10 conserva sus 21 bytes. */
+#define APP_UART_TELEMETRY_FLOW 0x12U
 #define APP_UART_PERMIT_JOIN 0x20U
 #define APP_UART_SET_SETPOINT 0x21U /* Reserved; this version returns NACK. */
 #define APP_UART_ACK 0x7EU

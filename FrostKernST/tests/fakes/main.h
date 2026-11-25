@@ -10,6 +10,8 @@ typedef enum {HAL_UART_RX_COMPLETE_CB_ID, HAL_UART_TX_COMPLETE_CB_ID,
 #define GPIO_PIN_SET 1
 #define ESP32_EN_GPIO_Port ((void *)1)
 #define ESP32_EN_Pin 128U
+#define BOOST_EN_GPIO_Port ((void *)1)
+#define BOOST_EN_Pin 32U
 #define UART_CLEAR_PEF 1U
 #define UART_CLEAR_FEF 2U
 #define UART_CLEAR_NEF 4U

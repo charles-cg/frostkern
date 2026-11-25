@@ -8,7 +8,7 @@ import time
 
 SOF, MAX_PAYLOAD = 0xA5, 64
 NAMES = {1: "HEARTBEAT", 2: "PING", 3: "PONG", 0x10: "TELEMETRY_TEMP",
-         0x11: "DEVICE_JOINED", 0x20: "PERMIT_JOIN", 0x21: "SET_SETPOINT",
+         0x11: "DEVICE_JOINED", 0x12: "TELEMETRY_FLOW", 0x20: "PERMIT_JOIN", 0x21: "SET_SETPOINT",
          0x7E: "ACK", 0x7F: "NACK"}
 
 
@@ -64,6 +64,16 @@ def describe(frame):
                       temperature_c=raw / 100 if flags & 1 else None,
                       master_update_ms=struct.unpack_from("<I", p, 13)[0],
                       age_ms=struct.unpack_from("<I", p, 17)[0])
+    elif kind == 0x12 and len(p) == 23:
+        flags = p[10]
+        valid = bool(flags & 1) and not bool(flags & 2) and bool(flags & 4)
+        flow = struct.unpack_from("<I", p, 11)[0]
+        result.update(version=p[0], node=p[1], ieee=p[2:10].hex().upper(),
+                      flow_valid=valid, stale=bool(flags & 2), report_seen=bool(flags & 4),
+                      flow_ml_min=flow if valid else None,
+                      flow_l_min=flow / 1000 if valid else None,
+                      master_update_ms=struct.unpack_from("<I", p, 15)[0],
+                      age_ms=struct.unpack_from("<I", p, 19)[0])
     elif kind in (0x7E, 0x7F) and len(p) == 2:
         result.update(request_type=NAMES.get(p[0], hex(p[0])), result_code=p[1])
     return result

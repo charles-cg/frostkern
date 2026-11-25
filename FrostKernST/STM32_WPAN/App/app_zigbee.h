@@ -63,6 +63,7 @@ typedef struct ZigbeeAppInfoT
 
   /* USER CODE BEGIN ZigbeeAppInfo_t */
   struct ZbZclClusterT *temperatureCluster;
+  struct ZbZclClusterT *flowCluster;
   /* USER CODE END ZigbeeAppInfo_t */
 
   struct ZbZclClusterT  * pstZbCluster[CLUSTER_NB_MAX];
@@ -114,6 +115,12 @@ extern void       APP_ZIGBEE_SerialCommandInstallCode     ( uint8_t * pRxBuffer,
 
 /* USER CODE BEGIN EFP */
 void APP_ZIGBEE_UpdateTemperature(void);
+void APP_ZIGBEE_ConfigFlowEndpoint(void);
+void APP_ZIGBEE_UpdateFlow(void);
+void APP_ZIGBEE_ConfigureFlowReports(uint8_t nodeId, uint16_t shortAddress);
+void APP_ZIGBEE_ProcessFlowReportRetries(void);
+void APP_ZIGBEE_ProcessReportRecovery(void);
+void APP_ZIGBEE_LinkReady(void);
 void APP_ZIGBEE_ConfigureTemperatureReports(
     uint8_t nodeId, uint16_t shortAddress);
 void APP_ZIGBEE_ProcessTemperatureReportRetries(void);

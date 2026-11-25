@@ -101,7 +101,11 @@ typedef struct {
     AppActuatorState actuators;
     AppRuntimeState state;
     AppFaultFlags faults;
-    uint32_t updated_at_ms; /* Reloj local del equipo que guarda este estado. */
+    uint32_t updated_at_ms; /* Ultimo reporte de cualquier medicion. */
+    /* Master: cada variable tiene su propia frescura. No se persisten muestras. */
+    uint32_t temperature_report_at_ms;
+    uint32_t flow_report_at_ms;
+    AppSampleValidFlags reports_seen; /* Incluye reportes recibidos no validos. */
 } AppStatus;
 
 /* Comprobar rangos, valores enum y destino ANTES de aplicar un comando.

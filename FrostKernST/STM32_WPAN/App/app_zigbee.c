@@ -48,6 +48,10 @@
 #include "task.h"
 #include "app_task_config.h"
 #include "app_ipc.h"
+#include "app_zb_recovery.h"
+#include "app_zb_persistence.h"
+#include "app_zb_rejoin.h"
+#include "zigbee.filter.h"
 /* USER CODE END PI */
 
 /* Public variables -----------------------------------------------------------*/
@@ -102,6 +106,10 @@ static enum zb_msg_filter_rc APP_ZIGBEE_DeviceJointCallback   ( struct ZigBeeT *
 static void APP_ZIGBEE_NwkFormOrJoinTask      ( void *argument );
 
 /* USER CODE BEGIN PFP */
+#if APP_IS_MASTER && APP_NETWORK_RECOVERY_ENABLED
+static void APP_ZIGBEE_ProcessRecovery(void);
+#endif
+static void APP_ZIGBEE_RequestPermitJoin(uint8_t seconds);
 
 /* USER CODE END PFP */
 
@@ -115,8 +123,116 @@ TaskHandle_t NwkFormJoinTask = NULL;
 
 
 /* USER CODE BEGIN PV */
+#if APP_IS_MASTER && APP_NETWORK_RECOVERY_ENABLED
+static AppZbRecovery joinRecovery;
+#endif
 
 /* USER CODE END PV */
+
+#if APP_IS_SLAVE
+typedef struct { uint32_t token; enum ZbStatusCodeT status; } AppRejoinResult;
+static AppZbRejoin slaveRejoin;
+static QueueHandle_t rejoinResults;
+static struct ZbMsgFilterT *parentFilter;
+static enum zb_msg_filter_rc APP_ZIGBEE_ParentEvent(struct ZigBeeT *zb,
+    uint32_t id, void *message, void *arg)
+{
+    (void)zb; (void)arg;
+    if (id == ZB_MSG_FILTER_STACK_EVENT && message != NULL) {
+        const struct ZbMsgStackEventT *event = message;
+        if (event->type == ZB_MSG_STACK_EVENT_PARENT_LINK_FAIL ||
+            event->type == ZB_MSG_STACK_EVENT_ATTEMPT_REJOIN) {
+            /* Stack callbacks do not call rejoin, reset or Flash APIs. */
+            if (evSystem != NULL) {
+                xEventGroupSetBits(evSystem, APP_EVENT_PARENT_LOST);
+            }
+            if (event->type == ZB_MSG_STACK_EVENT_ATTEMPT_REJOIN) {
+                return ZB_MSG_DISCARD; /* Application owns this rejoin. */
+            }
+        }
+    }
+    return ZB_MSG_CONTINUE;
+}
+static void APP_ZIGBEE_RejoinCallback(struct ZbNlmeJoinConfT *conf, void *arg)
+{
+    AppRejoinResult result = {(uint32_t)(uintptr_t)arg,
+        conf != NULL ? conf->status : ZB_ZDP_STATUS_TIMEOUT};
+    if (rejoinResults != NULL && xQueueSend(rejoinResults, &result, 0U) != pdPASS) {
+        LOG_ERROR_APP("[ZB-REJOIN] result queue full; timeout will restore saved network");
+    }
+}
+static void APP_ZIGBEE_ProcessSlaveRejoin(void)
+{
+    uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+    EventBits_t bits = xEventGroupClearBits(evSystem, APP_EVENT_PARENT_LOST);
+    if ((bits & APP_EVENT_PARENT_LOST) != 0U) {
+        if (!slaveRejoin.lost) {
+            LOG_INFO_APP("[ZB-REJOIN] parent lost; recovering the same network");
+        }
+        AppZbRejoin_Lost(&slaveRejoin, now);
+        AppIpc_MarkNetworkStopped();
+        stZigbeeAppInfo.bInitAfterJoin = false;
+    }
+    AppRejoinResult result;
+    while (rejoinResults != NULL && xQueueReceive(rejoinResults, &result, 0U) == pdPASS) {
+        bool ok = result.status == ZB_STATUS_SUCCESS;
+        if (!AppZbRejoin_Complete(&slaveRejoin, result.token, ok, now)) {
+            continue; /* Reject late callbacks from a previous request. */
+        }
+        if (ok) {
+            stZigbeeAppInfo.bInitAfterJoin = true;
+            AppIpc_MarkNetworkStarted();
+            AppZbPersistence_NetworkReady();
+            LOG_INFO_APP("[ZB-REJOIN] success, short address 0x%04X",
+                ZbShortAddress(stZigbeeAppInfo.pstZigbee));
+        } else {
+            LOG_ERROR_APP("[ZB-REJOIN] failed: 0x%02X; retry scheduled",
+                (unsigned int)result.status);
+        }
+    }
+    AppZbRejoinAction action = AppZbRejoin_Next(&slaveRejoin, now);
+    if (action == APP_ZB_REJOIN_SEND) {
+        LOG_INFO_APP("[ZB-REJOIN] requesting secure rejoin");
+        enum ZbStatusCodeT status = ZbStartupRejoin(stZigbeeAppInfo.pstZigbee,
+            APP_ZIGBEE_RejoinCallback, (void *)(uintptr_t)slaveRejoin.token);
+        if (status != ZB_STATUS_SUCCESS) {
+            (void)AppZbRejoin_Complete(&slaveRejoin, slaveRejoin.token, false, now);
+            LOG_ERROR_APP("[ZB-REJOIN] request refused: 0x%02X", (unsigned int)status);
+        }
+    } else if (action == APP_ZB_REJOIN_RESTORE) {
+        /* No second concurrent request if a callback disappeared. Reset first,
+         * then use the existing persistence startup/retry path. Do not erase
+         * the saved network or form a new network on the Slave. */
+        LOG_ERROR_APP("[ZB-REJOIN] retries exhausted or timed out; restoring saved network");
+        AppIpc_MarkNetworkStopped();
+        if (parentFilter != NULL) {
+            ZbMsgFilterRemove(stZigbeeAppInfo.pstZigbee, parentFilter);
+            parentFilter = NULL;
+        }
+        ZbReset(stZigbeeAppInfo.pstZigbee);
+        APP_ZIGBEE_NwkFormOrJoin();
+    }
+}
+#endif
+
+void APP_ZIGBEE_LinkReady(void)
+{
+#if APP_IS_SLAVE
+    if (rejoinResults == NULL) {
+        rejoinResults = xQueueCreate(4U, sizeof(AppRejoinResult));
+        if (rejoinResults == NULL) { Error_Handler(); return; }
+    }
+    if (parentFilter == NULL) {
+        parentFilter = ZbMsgFilterRegister(stZigbeeAppInfo.pstZigbee,
+            ZB_MSG_FILTER_STACK_EVENT, ZB_MSG_INTERNAL_PRIO + 1U,
+            APP_ZIGBEE_ParentEvent, NULL);
+        if (parentFilter == NULL) { Error_Handler(); return; }
+    }
+    AppZbRejoin_Ready(&slaveRejoin);
+    xEventGroupClearBits(evSystem, APP_EVENT_PARENT_LOST);
+    LOG_INFO_APP("[ZB-REJOIN] parent-loss recovery enabled");
+#endif
+}
 
 /* Functions Definition ------------------------------------------------------*/
 
@@ -311,6 +427,8 @@ static void APP_ZIGBEE_WaitForCallback( uint32_t lTimeOut )
 
   /* Wait Callback finished */
   osSemaphoreAcquire( EndWaitCallbackSemaphore, osWaitForever );
+  /* Restore puede completar antes de entrar aqui: cancelar tambien ese timer. */
+  UTIL_TIMER_Stop(&stZbCallbackTimeOutTimer);
 }
 
 /**
@@ -338,6 +456,8 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
   struct ZbStartupT   stConfig;
   uint32_t failedAttemptIndex = 0U;
 
+  AppZbPersistence_Init(stZigbeeAppInfo.pstZigbee);
+
   while ( eStatus != ZB_STATUS_SUCCESS )
   {
     /* Application configure Startup */
@@ -347,7 +467,16 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
     {
       /* Start Zigbee Stack & Form/Join network */
       stZigbeeAppInfo.eJoinStatus = ZB_ZDP_STATUS_TIMEOUT;
-      eStatus = ZbStartup( stZigbeeAppInfo.pstZigbee, &stConfig, APP_ZIGBEE_ZbStartupCallback, NULL );
+      AppZbPersistence_Enable();
+      if (AppZbPersistence_HasSaved())
+      {
+        /* Una red guardada no se reemplaza por otra por un fallo temporal. */
+        eStatus = AppZbPersistence_Restore(&stConfig, APP_ZIGBEE_ZbStartupCallback, NULL);
+      }
+      else
+      {
+        eStatus = ZbStartup( stZigbeeAppInfo.pstZigbee, &stConfig, APP_ZIGBEE_ZbStartupCallback, NULL );
+      }
       if ( eStatus == ZB_STATUS_SUCCESS )
       {
         APP_ZIGBEE_WaitForCallback( APP_ZIGBEE_STARTUP_WAIT_DELAY );
@@ -360,7 +489,15 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
       stZigbeeAppInfo.lJoinDelay = 0u;
       stZigbeeAppInfo.bInitAfterJoin = true;
 
-      if ( stZigbeeAppInfo.eStartupControl == ZbStartTypeForm )
+      if (AppZbPersistence_HasSaved())
+      {
+        LOG_INFO_APP("[ZB-PERSIST] saved network restored successfully");
+        if (stZigbeeAppInfo.eStartupControl == ZbStartTypeJoin)
+        {
+          UTIL_TIMER_Stop(&stBlinckLedTimer);
+        }
+      }
+      else if ( stZigbeeAppInfo.eStartupControl == ZbStartTypeForm )
         { LOG_INFO_APP( "Mesh network created." ); }
       else
       {
@@ -380,6 +517,11 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
     }
     else
     {
+      if (AppZbPersistence_HasSaved())
+      {
+        LOG_ERROR_APP("[ZB-PERSIST] restore failed: 0x%02X; retaining saved network",
+                      (unsigned int)eStatus);
+      }
       uint32_t retryDelayMs = AppNetwork_JoinRetryDelayMs( failedAttemptIndex );
       if ( failedAttemptIndex < 2U )
       {
@@ -389,7 +531,7 @@ void APP_ZIGBEE_NwkFormOrJoin(void)
       LOG_INFO_APP( "Startup failed, attempting again after a delay (%lu ms)", (unsigned long) retryDelayMs );
 
       /* If Device, reset ZigBee data to be sure that start with good data */
-      if ( stZigbeeAppInfo.eStartupControl == ZbStartTypeJoin )
+      if ((stZigbeeAppInfo.eStartupControl == ZbStartTypeJoin) || AppZbPersistence_HasSaved())
       {
         ZbReset( stZigbeeAppInfo.pstZigbee );
       }
@@ -413,6 +555,12 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
 
     AppZbCommand command;
 
+#if APP_IS_MASTER && APP_NETWORK_RECOVERY_ENABLED
+    AppZbRecovery_Init(&joinRecovery);
+    LOG_INFO_APP("[ZB-RECOVERY] automatic recovery enabled: timeout=%lu ms",
+                 (unsigned long)APP_NETWORK_RECOVERY_STALE_MS);
+#endif
+
     /* Esperar la autorizacion de inicio. */
     osSemaphoreAcquire(
         NwkFormStartSemaphore,
@@ -427,7 +575,7 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
         const TickType_t waitTicks =
             pdMS_TO_TICKS(2000U);
 #else
-        /* Wake periodically to service report-configuration deadlines. */
+        /* Service report retries and recovery, even with an empty queue. */
         const TickType_t waitTicks =
             pdMS_TO_TICKS(1000U);
 #endif
@@ -439,10 +587,24 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
                 waitTicks);
 
 #if APP_IS_SLAVE
-        APP_ZIGBEE_UpdateTemperature();
+        APP_ZIGBEE_ProcessSlaveRejoin();
+        if (AppIpc_NetworkStarted()) {
+            APP_ZIGBEE_UpdateTemperature();
+            APP_ZIGBEE_UpdateFlow();
+        }
 #else
+        APP_ZIGBEE_ProcessReportRecovery();
         APP_ZIGBEE_ProcessTemperatureReportRetries();
+        APP_ZIGBEE_ProcessFlowReportRetries();
+#if APP_NETWORK_RECOVERY_ENABLED
+        APP_ZIGBEE_ProcessRecovery();
 #endif
+#endif
+
+        /* Guardar solo cambios de pila/registro, nunca cada muestra UART. */
+        if (AppIpc_NetworkStarted()) {
+            AppZbPersistence_Process();
+        }
 
         if (received != pdPASS)
         {
@@ -480,6 +642,7 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
                 APP_ZIGBEE_ConfigureTemperatureReports(
                     nodeId,
                     command.short_address);
+                APP_ZIGBEE_ConfigureFlowReports(nodeId, command.short_address);
             }
         }
         else if (
@@ -518,6 +681,23 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
                                  ": measurement unavailable",
                                  LOG_NUMBER64(ieee));
                 }
+            }
+        }
+        else if (command.type == APP_ZB_COMMAND_FLOW_RECEIVED)
+        {
+            uint64_t ieee = command.ieee_address;
+            if (ieee == 0U && command.short_address < 0xFFF8U) {
+                ieee = ZbNwkAddrLookupExt(stZigbeeAppInfo.pstZigbee,
+                                         command.short_address);
+            }
+            if (!AppIpc_SaveSlaveFlow(ieee, command.flow_ml_min, command.flow_valid)) {
+                LOG_ERROR_APP("Could not save Slave flow");
+            } else if (command.flow_valid) {
+                LOG_INFO_APP("Flow report from " LOG_DISPLAY64() ": %lu mL/min",
+                    LOG_NUMBER64(ieee), (unsigned long)command.flow_ml_min);
+            } else {
+                LOG_INFO_APP("Flow report from " LOG_DISPLAY64() ": measurement unavailable",
+                    LOG_NUMBER64(ieee));
             }
         }
         else
@@ -628,7 +808,7 @@ static void APP_ZIGBEE_ZbZdoPermitJoinReqCallback( struct ZbZdoPermitJoinRspT * 
  * @param  cPermitJoinDelay   Delay in second during the new Permit to Join is available
  * @retval None
  */
-void APP_ZIGBEE_PermitJoin( uint8_t cPermitJoinDelay )
+static void APP_ZIGBEE_RequestPermitJoin( uint8_t cPermitJoinDelay )
 {
   struct ZbZdoPermitJoinReqT  stJoinRequest;
   enum ZbStatusCodeT          eStatus;
@@ -645,6 +825,51 @@ void APP_ZIGBEE_PermitJoin( uint8_t cPermitJoinDelay )
     LOG_ERROR_APP( "Error during command Permit Join (%d)", eStatus );
   }
 }
+
+void APP_ZIGBEE_PermitJoin(uint8_t seconds)
+{
+  if (seconds > 254U) {
+    return;
+  }
+#if APP_IS_MASTER && APP_NETWORK_RECOVERY_ENABLED
+  AppZbRecovery_ManualCommand(&joinRecovery,
+      (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS, seconds);
+#endif
+  APP_ZIGBEE_RequestPermitJoin(seconds);
+}
+
+#if APP_IS_MASTER && APP_NETWORK_RECOVERY_ENABLED
+static void APP_ZIGBEE_ProcessRecovery(void)
+{
+  if (!AppIpc_NetworkStarted()) {
+    return;
+  }
+  AppZbRecoveryPeer peers[APP_ZB_RECOVERY_MAX_PEERS] = {0};
+  const uint8_t emptyIeee[8] = {0};
+  _Static_assert(APP_SLAVE_COUNT <= APP_ZB_RECOVERY_MAX_PEERS,
+                 "Ampliar el estado de recuperacion para mas Slaves");
+  for (uint8_t nodeId = 1U; nodeId <= APP_SLAVE_COUNT; ++nodeId) {
+    AppStatus status;
+    if (!AppIpc_ReadSlaveStatus(nodeId, &status)) {
+      /* No cerrar una ventana por no poder tomar el mutex este ciclo. */
+      return;
+    }
+    peers[nodeId - 1U].known =
+        memcmp(status.device.ieee_address, emptyIeee, sizeof(emptyIeee)) != 0;
+    peers[nodeId - 1U].updated_at_ms = status.updated_at_ms;
+  }
+  uint32_t now = (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+  AppZbRecoveryAction action = AppZbRecovery_Next(&joinRecovery, now, peers);
+  if (action == APP_ZB_RECOVERY_OPEN) {
+    LOG_INFO_APP("[ZB-RECOVERY] Slave reports missing; requesting join window: %u s",
+                 (unsigned int)APP_NETWORK_RECOVERY_WINDOW_SECONDS);
+    APP_ZIGBEE_RequestPermitJoin(APP_NETWORK_RECOVERY_WINDOW_SECONDS);
+  } else if (action == APP_ZB_RECOVERY_CLOSE) {
+    LOG_INFO_APP("[ZB-RECOVERY] Reports restored; requesting join close");
+    APP_ZIGBEE_RequestPermitJoin(0U);
+  }
+}
+#endif
 
 /**
  * @brief  Indicate if Application as already join the network
