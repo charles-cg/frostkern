@@ -36,7 +36,12 @@
 #define FRAME_GAP_US 100000 /* Protocol: a pause >= 100 ms drops a partial frame. */
 
 #define MAX_SLAVES 2
+/* The upload task runs as soon as a reading changes; this is only the longest it
+ * sleeps (retries after a failed PATCH, and the /bridge heartbeat below). */
 #define UPLOAD_PERIOD_MS 2000
+/* After a wake-up, wait this long so temp + flow frames that arrive together go
+ * out in one PATCH instead of two. */
+#define UPLOAD_COALESCE_MS 50
 #define BRIDGE_PERIOD_MS 30000
 #define STATS_PERIOD_US 5000000
 
@@ -69,6 +74,7 @@ static MasterState s_master;
 static SemaphoreHandle_t s_lock;
 static EventGroupHandle_t s_wifi_events;
 static esp_http_client_handle_t s_http;
+static TaskHandle_t s_upload_task; /* Woken by handle_frame() on new data. */
 
 static void format_temp(char *out, size_t cap, bool valid, int16_t centi);
 
@@ -136,6 +142,7 @@ static bool handle_frame(const AppUartFrame *f)
         return false;
     }
 
+    bool changed = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (f->type == APP_UART_HEARTBEAT) {
         s_master.seen = true;
@@ -145,6 +152,7 @@ static bool handle_frame(const AppUartFrame *f)
         SlaveState *s = slave_for(p[1], p + 2);
         if (s != NULL) {
             s->info_dirty = true;
+            changed = true;
             ESP_LOGI(TAG, "[REGISTRO] slave %u IEEE=%s", s->node_id, s->ieee);
         }
     } else if (f->type == APP_UART_TELEMETRY_TEMP) {
@@ -160,6 +168,7 @@ static bool handle_frame(const AppUartFrame *f)
                 s->temp_centi = valid ? centi : 0;
                 s->temp_updated_at = updated_at;
                 s->telemetry_dirty = true;
+                changed = true;
                 char text[16];
                 format_temp(text, sizeof text, valid, centi);
                 ESP_LOGI(TAG, "[TEMP] slave %u tempC=%s", s->node_id, text);
@@ -177,6 +186,7 @@ static bool handle_frame(const AppUartFrame *f)
                 s->flow_ml_min = valid ? flow : 0;
                 s->flow_updated_at = updated_at;
                 s->telemetry_dirty = true;
+                changed = true;
                 if (valid) {
                     ESP_LOGI(TAG, "[FLOW] slave %u %" PRIu32 " mL/min", s->node_id, flow);
                 } else {
@@ -186,6 +196,9 @@ static bool handle_frame(const AppUartFrame *f)
         }
     }
     xSemaphoreGive(s_lock);
+    if (changed && s_upload_task != NULL) {
+        xTaskNotifyGive(s_upload_task); /* Upload now instead of at the next 2 s tick. */
+    }
     return true;
 }
 
@@ -365,7 +378,11 @@ static void upload_task(void *arg)
     TickType_t last_bridge = 0;
     bool bridge_sent = false;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(UPLOAD_PERIOD_MS));
+        /* Sleep until handle_frame() reports new data, or at most UPLOAD_PERIOD_MS. */
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(UPLOAD_PERIOD_MS)) != 0) {
+            vTaskDelay(pdMS_TO_TICKS(UPLOAD_COALESCE_MS));
+            ulTaskNotifyTake(pdTRUE, 0); /* Frames in that window are in this upload. */
+        }
         if (!(xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT)) {
             continue;
         }
@@ -459,5 +476,5 @@ void app_main(void)
 
     xTaskCreate(uart_task, "uart", 4096, NULL, 6, NULL);
     wifi_start();
-    xTaskCreate(upload_task, "upload", 8192, NULL, 5, NULL);
+    xTaskCreate(upload_task, "upload", 8192, NULL, 5, &s_upload_task);
 }
