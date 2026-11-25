@@ -9,6 +9,12 @@
 #define D7 12
 #define D6 11
 #define SERIAL_8N1 0
+// Minimal Arduino String: enough for c_str(), +, += and passing to HTTPClient.
+struct String : std::string {
+  using std::string::string;
+  String() = default;
+  String(const std::string &s) : std::string(s) {}
+};
 inline uint32_t fakeMs = 0;
 inline uint32_t millis() { return fakeMs; }
 inline void delay(unsigned ms) { fakeMs += ms; }

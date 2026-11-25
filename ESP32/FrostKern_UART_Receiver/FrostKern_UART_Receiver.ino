@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_system.h>
 // Local credentials stay outside Git. A fresh clone builds with Wi-Fi off.
 #if __has_include("wifi_config.h")
 #include "wifi_config.h"
@@ -7,6 +8,8 @@
 #endif
 #if FROSTKERN_WIFI_ENABLED
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #endif
 extern "C" {
 #include "app_uart_protocol.h"
@@ -110,6 +113,23 @@ static void showFrame(const AppUartFrame *f) {
   }
 }
 
+// Why the chip last restarted; diagnoses silent reboots.
+static const char *resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "POWERON (power lost or first power-up)";
+    case ESP_RST_BROWNOUT: return "BROWNOUT (supply voltage dipped)";
+    case ESP_RST_PWR_GLITCH: return "PWR_GLITCH (supply glitch)";
+    case ESP_RST_PANIC: return "PANIC (firmware crash)";
+    case ESP_RST_INT_WDT: return "INT_WDT (interrupt watchdog)";
+    case ESP_RST_TASK_WDT: return "TASK_WDT (task watchdog)";
+    case ESP_RST_WDT: return "WDT (other watchdog)";
+    case ESP_RST_SW: return "SW (esp_restart)";
+    case ESP_RST_EXT: return "EXT (reset pin)";
+    case ESP_RST_USB: return "USB (USB reset, e.g. upload)";
+    default: return "OTHER";
+  }
+}
+
 // Optional station connection. UART keeps running if Wi-Fi is unavailable.
 static void serviceWifi() {
 #if FROSTKERN_WIFI_ENABLED
@@ -138,6 +158,30 @@ static void serviceWifi() {
 #endif
 }
 
+#if FROSTKERN_WIFI_ENABLED
+// E1: PATCH a fixed JSON to /test to prove Wi-Fi, TLS and the secret work.
+static void uploadTest() {
+  char url[256];
+  const int n = snprintf(url, sizeof url, "%s/test.json?auth=%s",
+                         FROSTKERN_FIREBASE_URL, FROSTKERN_FIREBASE_SECRET);
+  if (n < 0 || (size_t)n >= sizeof url) {
+    Serial.println("[FB] URL demasiado larga");
+    return;
+  }
+  WiFiClientSecure client;
+  client.setInsecure();  // E1 only: skips certificate check.
+  HTTPClient http;
+  if (!http.begin(client, url)) {
+    Serial.println("[FB] begin fallo");
+    return;
+  }
+  http.addHeader("Content-Type", "application/json");
+  const int code = http.PATCH("{\"hello\":1,\"ts\":{\".sv\":\"timestamp\"}}");
+  Serial.printf("[FB] PATCH -> %d\r\n", code);
+  http.end();
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
   Serial1.setRxBufferSize(1024);
@@ -147,6 +191,8 @@ void setup() {
   while (!Serial && (uint32_t)(millis() - start) < 2500U) delay(10);
   Serial.println("\r\nFrostKern: receptor UART v1 + temperatura/caudal para XIAO ESP32-C5");
   Serial.println("RX=D7/GPIO12, 115200 8N1. No envia comandos.");
+  const esp_reset_reason_t reason = esp_reset_reason();
+  Serial.printf("[BOOT] reset_reason=%d %s\r\n", (int)reason, resetReasonName(reason));
   Serial.println("Esperando al Master. [RX] bytes=0 es normal sin conectar PA12.");
 }
 
@@ -174,5 +220,12 @@ void loop() {
                   (unsigned long)rxBytes, (unsigned long)goodFrames,
                   (unsigned long)parser.crc_errors, (unsigned long)badMessages);
   }
+#if FROSTKERN_WIFI_ENABLED
+  static uint32_t lastUploadMs;
+  if (WiFi.status() == WL_CONNECTED && (uint32_t)(now - lastUploadMs) >= 5000U) {
+    lastUploadMs = now;
+    uploadTest();
+  }
+#endif
   delay(1);
 }
