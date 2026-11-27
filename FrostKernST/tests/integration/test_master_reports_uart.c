@@ -38,6 +38,13 @@ static uint64_t ZbNwkAddrLookupExt(void *zb,uint16_t address)
            address==0x5678U?UINT64_C(0x00124B000ABCDEF1):0U;
 }
 
+static unsigned int tempConfigs,flowConfigs;
+static void APP_ZIGBEE_ConfigureTemperatureReports(uint8_t id,uint16_t address)
+{assert(id==1U&&address==0x1234U);++tempConfigs;}
+static void APP_ZIGBEE_ConfigureFlowReports(uint8_t id,uint16_t address)
+{assert(id==1U&&address==0x1234U);++flowConfigs;}
+#include "zigbee_join_dispatch.inc"
+
 /* These snippets are extracted from the production files by the test runner. */
 #include "zigbee_report_callback.inc"
 #include "zigbee_master_dispatch.inc"
@@ -237,8 +244,43 @@ int main(int argc,char **argv)
     Integration_TimeMs=100U;PublishFlow(2U);
     assert(lastFrame.payload[10]==5U && Read32(lastFrame.payload+19)==
         (uint32_t)(100U-((UINT32_MAX-99U)/portTICK_PERIOD_MS*portTICK_PERIOD_MS)));
+    /* Observed rejoin invalidates only that peer, before any new report. */
+    Integration_TimeMs=500000U;
+    assert(AppIpc_SaveSlaveTemperature(UINT64_C(0x00124B000ABCDEF0),1900,true));
+    assert(AppIpc_SaveSlaveFlow(UINT64_C(0x00124B000ABCDEF0),9900U,true));
+    assert(AppIpc_SaveSlaveTemperature(UINT64_C(0x00124B000ABCDEF1),3300,true));
+    assert(AppIpc_SaveSlaveFlow(UINT64_C(0x00124B000ABCDEF1),1234U,true));
+    AppStatus peerBefore;assert(AppIpc_ReadSlaveStatus(2U,&peerBefore));
+    AppZbCommand joined={.type=APP_ZB_COMMAND_CONFIG_TEMP_REPORT,
+        .ieee_address=UINT64_C(0x00124B000ABCDEF0),.short_address=0x1234U};
+    Integration_DispatchJoin(joined);
+    assert(tempConfigs==1U&&flowConfigs==1U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.reports_seen==0U&&status.updated_at_ms==0U);
+    assert((status.latest_sample.valid&(APP_SAMPLE_VALID_TEMP|APP_SAMPLE_VALID_FLOW))==0U);
+    PublishSlave(1U);assert(lastFrame.type==0x10U&&lastFrame.payload[10]==0U);
+    assert(Read32(lastFrame.payload+17)==UINT32_MAX);
+    PublishFlow(1U);assert(lastFrame.type==0x12U&&lastFrame.payload[10]==0U);
+    assert(Read32(lastFrame.payload+19)==UINT32_MAX);
+    assert(AppIpc_ReadSlaveStatus(2U,&status));
+    assert(memcmp(&status,&peerBefore,sizeof(status))==0);
+    source.src.nwkAddr=0x1234U;Report(&source,2750);assert(Drain()==1U);
+    uint8_t nowFlow[4]={0x88,0x13,0,0}; // 5000 mL/min
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_UNSIGNED_32BIT,nowFlow,4U,NULL);
+    assert(Drain()==1U);PublishSlave(1U);assert(lastFrame.payload[10]==5U);
+    PublishFlow(1U);assert(lastFrame.payload[10]==5U&&Read32(lastFrame.payload+11)==5000U);
+    assert(Read32(lastFrame.payload+19)==0U);
+    assert(!AppIpc_InvalidateSlaveMeasurements(0U));
+    Integration_MutexAllowed=false;
+    assert(!AppIpc_InvalidateSlaveMeasurements(UINT64_C(0x00124B000ABCDEF0)));
+    Integration_MutexAllowed=true;
     fclose(capture);capture=NULL;
     Integration_FreeObjects();
     puts("MASTER_TEST_PASS: production report callback + production dispatch + real IPC + UART frames; IEEE separation, malformed data, unknown source/value and stale handling passed (fake SDK/RTOS).");
     return 0;
 }
+
+#include "app_master_control.h"
+uint8_t AppMaster_QueueCommand(uint8_t type,const uint8_t *p,uint8_t n)
+{ (void)type;(void)p;(void)n;return APP_UART_ERR_NOT_READY; }
+bool AppMaster_Read(AppMasterSnapshot *s) { (void)s;return false; }

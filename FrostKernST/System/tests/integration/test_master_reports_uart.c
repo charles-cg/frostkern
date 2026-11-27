@@ -1,0 +1,286 @@
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "app_ipc.h"
+#include "app_network_config.h"
+#include "fake_rtos.h"
+#include "main.h"
+#include "log_module.h"
+
+#define APP_ZIGBEE_ENDPOINT 17U
+#include "app_flow_report.h"
+#define ZCL_TEMP_MEAS_ATTR_MEAS_VAL 0U
+#define ZCL_TEMP_MEAS_UNKNOWN 0x8000U
+#define ZB_APSDE_ADDRMODE_EXT 3
+#define ZB_APSDE_ADDRMODE_SHORT 2
+enum ZclDataTypeT {ZCL_DATATYPE_SIGNED_16BIT=0x29,ZCL_DATATYPE_UNSIGNED_32BIT=0x23};
+enum ZclStatusCodeT {ZCL_STATUS_SUCCESS=0,ZCL_STATUS_FAILURE=1};
+struct ZbZclClusterT {unsigned int unused;};
+struct ZbZclHeaderT {unsigned int unused;};
+struct ZbApsdeDataIndT {
+    struct {uint16_t endpoint;} dst;
+    struct {uint16_t endpoint;int mode;uint16_t nwkAddr;uint64_t extAddr;} src;
+};
+static int zigbee;
+static struct {void *pstZigbee;} stZigbeeAppInfo={&zigbee};
+static long long ZbZclParseInteger(enum ZclDataTypeT type,const uint8_t *p,
+                                   enum ZclStatusCodeT *status)
+{
+    assert(type==ZCL_DATATYPE_SIGNED_16BIT);
+    *status=ZCL_STATUS_SUCCESS;
+    return (int16_t)((uint16_t)p[0]|(uint16_t)((uint16_t)p[1]<<8U));
+}
+static uint64_t ZbNwkAddrLookupExt(void *zb,uint16_t address)
+{
+    assert(zb==&zigbee);
+    return address==0x1234U?UINT64_C(0x00124B000ABCDEF0):
+           address==0x5678U?UINT64_C(0x00124B000ABCDEF1):0U;
+}
+
+static unsigned int tempConfigs,flowConfigs;
+static void APP_ZIGBEE_ConfigureTemperatureReports(uint8_t id,uint16_t address)
+{assert(id==1U&&address==0x1234U);++tempConfigs;}
+static void APP_ZIGBEE_ConfigureFlowReports(uint8_t id,uint16_t address)
+{assert(id==1U&&address==0x1234U);++flowConfigs;}
+#include "zigbee_join_dispatch.inc"
+
+/* These snippets are extracted from the production files by the test runner. */
+#include "zigbee_report_callback.inc"
+#include "zigbee_master_dispatch.inc"
+#include "zigbee_flow_callback.inc"
+#include "zigbee_flow_dispatch.inc"
+#include "../../Core/Src/app_uart_bridge.c"
+
+UART_HandleTypeDef huart2;
+static AppUartFrame lastFrame;
+static unsigned int frameCount;
+static FILE *capture;
+static unsigned int Drain(void)
+{
+    unsigned int count=0U;AppZbCommand command;
+    while(xQueueReceive(qZbCommand,&command,0U)==pdPASS){
+        if(command.type==APP_ZB_COMMAND_TEMP_RECEIVED)Integration_DispatchTemperature(command);
+        else {assert(command.type==APP_ZB_COMMAND_FLOW_RECEIVED);Integration_DispatchFlow(command);}
+        ++count;
+    }
+    return count;
+}
+static void Report(struct ZbApsdeDataIndT *data,int16_t value)
+{
+    uint8_t payload[2]={(uint8_t)value,(uint8_t)((uint16_t)value>>8U)};
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,data,0U,ZCL_DATATYPE_SIGNED_16BIT,
+                                payload,2U,NULL);
+}
+static uint32_t Read32(const uint8_t *p)
+{return (uint32_t)p[0]|(uint32_t)p[1]<<8U|(uint32_t)p[2]<<16U|(uint32_t)p[3]<<24U;}
+void Error_Handler(void){assert(0);}
+void MX_USART2_UART_Init(void){}
+void vTaskDelay(TickType_t ticks){Integration_TimeMs+=ticks*portTICK_PERIOD_MS;}
+uint32_t HAL_GetTick(void){return Integration_TimeMs;}
+void vTaskDelete(TaskHandle_t task){(void)task;assert(0);}
+void HAL_NVIC_DisableIRQ(int irq){assert(irq==USART2_IRQn);}
+void HAL_NVIC_EnableIRQ(int irq){assert(irq==USART2_IRQn);}
+void HAL_NVIC_SetPriority(int irq,uint32_t priority,uint32_t sub)
+{assert(irq==USART2_IRQn&&priority==8U&&sub==0U);}
+void HAL_GPIO_WritePin(void *port,uint16_t pin,int state)
+{(void)port;(void)pin;(void)state;}
+HAL_StatusTypeDef HAL_UART_RegisterCallback(UART_HandleTypeDef *u,
+    HAL_UART_CallbackIDTypeDef id,void (*fn)(UART_HandleTypeDef *))
+{assert(u==&huart2&&fn!=NULL);(void)id;return HAL_OK;}
+HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
+{assert(u==&huart2&&p!=NULL&&n==1U);return HAL_OK;}
+HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *u,uint8_t *p,uint16_t n)
+{
+    assert(u==&huart2);AppUartParser decoder;AppUartParser_Init(&decoder);
+    for(uint16_t i=0;i<n;++i)AppUartParser_Push(&decoder,p[i]);
+    assert(AppUartParser_Next(&decoder,&lastFrame));++frameCount;
+    if(capture!=NULL)assert(fwrite(p,1U,n,capture)==n);
+    TxComplete(u);return HAL_OK;
+}
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *u)
+{assert(u==&huart2);return HAL_OK;}
+HAL_StatusTypeDef HAL_UART_AbortTransmit(UART_HandleTypeDef *u)
+{assert(u==&huart2);return HAL_OK;}
+
+int main(int argc,char **argv)
+{
+    assert(argc==3);
+    int16_t measured=(int16_t)strtol(argv[1],NULL,10);
+    assert(measured>=2498&&measured<=2502);
+    capture=fopen(argv[2],"wb");assert(capture!=NULL);
+    AppIpc_Init();AppUartBridge_Start();Integration_TimeMs=10000U;
+    struct ZbApsdeDataIndT source={.dst={17U},
+        .src={17U,ZB_APSDE_ADDRMODE_EXT,0U,UINT64_C(0x00124B000ABCDEF0)}};
+    Report(&source,measured);assert(Drain()==1U);
+    AppStatus status;
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.latest_sample.temperature_centi_c==measured);
+    assert((status.latest_sample.valid&APP_SAMPLE_VALID_TEMP)!=0U);
+    assert(status.device.ieee_address[0]==0U&&status.device.ieee_address[1]==0x12U);
+    assert(status.device.ieee_address[7]==0xF0U);
+    PublishSlave(1U);
+    assert(frameCount==2U&&lastFrame.type==APP_UART_TELEMETRY_TEMP);
+    assert(lastFrame.payload[1]==1U&&lastFrame.payload[10]==5U);
+    assert((int16_t)((uint16_t)lastFrame.payload[11]|
+                    (uint16_t)((uint16_t)lastFrame.payload[12]<<8U))==measured);
+    assert(Read32(&lastFrame.payload[13])==10000U&&Read32(&lastFrame.payload[17])==0U);
+
+    source.src.mode=ZB_APSDE_ADDRMODE_SHORT;source.src.extAddr=0U;
+    source.src.nwkAddr=0x5678U;Integration_TimeMs+=10U;
+    Report(&source,(int16_t)(measured+100));assert(Drain()==1U);
+    assert(AppIpc_ReadSlaveStatus(2U,&status));
+    assert(status.latest_sample.temperature_centi_c==measured+100);
+    PublishSlave(2U);assert(lastFrame.payload[1]==2U&&lastFrame.payload[9]==0xF1U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.latest_sample.temperature_centi_c==measured);
+
+    /* Regression: real ST callback can receive a temperature value followed
+     * by AttributeReportingStatus. in_len is 6, not just the value's 2 bytes.
+     * This reproduces the PCB trace: attr=0x0000 type=0x29 len=6,
+     * followed by attr=0xFFFE type=0x30 len=1.
+     */
+    const int16_t radioTemperature=2358;
+    uint8_t combined[6]={(uint8_t)radioTemperature,
+        (uint8_t)((uint16_t)radioTemperature>>8U),0xFEU,0xFFU,0x30U,0x01U};
+    source.src.nwkAddr=0x1234U;Integration_TimeMs+=10U;
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,
+        ZCL_DATATYPE_SIGNED_16BIT,combined,sizeof(combined),NULL);
+    assert(Drain()==1U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.latest_sample.temperature_centi_c==radioTemperature);
+    assert((status.latest_sample.valid&APP_SAMPLE_VALID_TEMP)!=0U);
+    PublishSlave(1U);
+    assert((int16_t)((uint16_t)lastFrame.payload[11]|
+        (uint16_t)((uint16_t)lastFrame.payload[12]<<8U))==radioTemperature);
+    /* The SDK next invokes the callback for the trailing metadata attribute. */
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0xFFFEU,
+        (enum ZclDataTypeT)0x30,combined+5U,1U,NULL);
+    assert(Drain()==0U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.latest_sample.temperature_centi_c==radioTemperature);
+    /* Additional records must not change signed interpretation. */
+    combined[0]=0x9CU;combined[1]=0xFFU; /* -100 centi-C */
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,
+        ZCL_DATATYPE_SIGNED_16BIT,combined,sizeof(combined),NULL);
+    assert(Drain()==1U&&AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.latest_sample.temperature_centi_c==-100);
+    combined[0]=0U;combined[1]=0x80U; /* unknown */
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,
+        ZCL_DATATYPE_SIGNED_16BIT,combined,sizeof(combined),NULL);
+    assert(Drain()==1U&&AppIpc_ReadSlaveStatus(1U,&status));
+    assert((status.latest_sample.valid&APP_SAMPLE_VALID_TEMP)==0U);
+    /* Restore the previous successful value for remaining checks. */
+    Report(&source,measured);assert(Drain()==1U);
+
+    /* Application callback rejects wrong endpoint/type/attribute/length. */
+    source.src.nwkAddr=0x5678U;
+    uint8_t bytes[2]={1U,2U};
+    source.dst.endpoint=18U;Report(&source,measured);assert(Drain()==0U);
+    source.dst.endpoint=17U;source.src.endpoint=18U;
+    Report(&source,measured);assert(Drain()==0U);source.src.endpoint=17U;
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,1U,ZCL_DATATYPE_SIGNED_16BIT,bytes,2U,NULL);
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,(enum ZclDataTypeT)0x21,bytes,2U,NULL);
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,ZCL_DATATYPE_SIGNED_16BIT,bytes,0U,NULL);
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,ZCL_DATATYPE_SIGNED_16BIT,bytes,1U,NULL);
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,&source,0U,ZCL_DATATYPE_SIGNED_16BIT,NULL,2U,NULL);
+    APP_ZIGBEE_TemperatureReport(NULL,NULL,NULL,0U,ZCL_DATATYPE_SIGNED_16BIT,bytes,2U,NULL);
+    assert(Drain()==0U);
+
+    source.src.nwkAddr=0x7777U;Report(&source,measured);assert(Drain()==1U);
+    assert(AppIpc_ReadSlaveStatus(2U,&status));
+    assert(status.latest_sample.temperature_centi_c==measured+100);
+    source.src.nwkAddr=0x1234U;Integration_TimeMs+=10U;
+    Report(&source,INT16_MIN);assert(Drain()==1U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert((status.latest_sample.valid&APP_SAMPLE_VALID_TEMP)==0U);
+    PublishSlave(1U);assert(lastFrame.payload[10]==APP_UART_TEMP_REPORT_SEEN);
+    assert(lastFrame.payload[11]==0U&&lastFrame.payload[12]==0U);
+
+    Report(&source,measured);assert(Drain()==1U);
+    Integration_TimeMs+=180010U;
+    PublishSlave(1U);
+    assert(lastFrame.payload[10]==(APP_UART_TEMP_STALE|APP_UART_TEMP_REPORT_SEEN));
+    assert(Read32(&lastFrame.payload[17])==180010U);
+    /* A fresh flow report must never freshen an old temperature. */
+    Integration_TimeMs += 10U;
+    uint8_t flowBytes[8] = {0x4C,0x1D,0,0,0xFE,0xFF,0x30,1}; // 7500 mL/min
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_UNSIGNED_32BIT,
+                          flowBytes,sizeof(flowBytes),NULL);
+    assert(Drain()==1U && AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.latest_sample.flow_ml_min==7500U);
+    assert((status.latest_sample.valid&APP_SAMPLE_VALID_FLOW)!=0U);
+    PublishFlow(1U);
+    assert(lastFrame.type==APP_UART_TELEMETRY_FLOW && lastFrame.length==23U);
+    assert(lastFrame.payload[10]==5U && Read32(lastFrame.payload+11)==7500U);
+    assert(Read32(lastFrame.payload+19)==0U);
+    PublishSlave(1U);
+    assert(lastFrame.payload[10]==6U); // Temperature is STILL stale.
+    uint32_t flowTime = status.flow_report_at_ms;
+    Integration_TimeMs += 180010U;
+    Report(&source,2500);assert(Drain()==1U);
+    PublishFlow(1U);
+    assert(lastFrame.payload[10]==6U && Read32(lastFrame.payload+19)==180010U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status) && status.flow_report_at_ms==flowTime);
+    // A real zero-pulse result is valid; never confuse it with no report.
+    memset(flowBytes,0,4);
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_UNSIGNED_32BIT,flowBytes,4U,NULL);
+    assert(Drain()==1U);PublishFlow(1U);
+    assert(lastFrame.payload[10]==5U && Read32(lastFrame.payload+11)==0U);
+    memset(flowBytes,0xFF,4);
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_UNSIGNED_32BIT,flowBytes,4U,NULL);
+    assert(Drain()==1U);PublishFlow(1U);
+    assert(lastFrame.payload[10]==4U);
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_UNSIGNED_32BIT,flowBytes,3U,NULL);
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0xFFFEU,ZCL_DATATYPE_UNSIGNED_32BIT,flowBytes,4U,NULL);
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_SIGNED_16BIT,flowBytes,4U,NULL);
+    assert(Drain()==0U);
+    // Arrival at uptime=0 remains a report; unsigned elapsed works across wrap.
+    Integration_TimeMs=0U;
+    assert(AppIpc_SaveSlaveFlow(UINT64_C(0x00124B000ABCDEF1),1234U,true));
+    PublishFlow(2U);assert(lastFrame.payload[10]==5U && Read32(lastFrame.payload+19)==0U);
+    Integration_TimeMs=UINT32_MAX-99U;
+    assert(AppIpc_SaveSlaveFlow(UINT64_C(0x00124B000ABCDEF1),5678U,true));
+    Integration_TimeMs=100U;PublishFlow(2U);
+    assert(lastFrame.payload[10]==5U && Read32(lastFrame.payload+19)==
+        (uint32_t)(100U-((UINT32_MAX-99U)/portTICK_PERIOD_MS*portTICK_PERIOD_MS)));
+    /* Observed rejoin invalidates only that peer, before any new report. */
+    Integration_TimeMs=500000U;
+    assert(AppIpc_SaveSlaveTemperature(UINT64_C(0x00124B000ABCDEF0),1900,true));
+    assert(AppIpc_SaveSlaveFlow(UINT64_C(0x00124B000ABCDEF0),9900U,true));
+    assert(AppIpc_SaveSlaveTemperature(UINT64_C(0x00124B000ABCDEF1),3300,true));
+    assert(AppIpc_SaveSlaveFlow(UINT64_C(0x00124B000ABCDEF1),1234U,true));
+    AppStatus peerBefore;assert(AppIpc_ReadSlaveStatus(2U,&peerBefore));
+    AppZbCommand joined={.type=APP_ZB_COMMAND_CONFIG_TEMP_REPORT,
+        .ieee_address=UINT64_C(0x00124B000ABCDEF0),.short_address=0x1234U};
+    Integration_DispatchJoin(joined);
+    assert(tempConfigs==1U&&flowConfigs==1U);
+    assert(AppIpc_ReadSlaveStatus(1U,&status));
+    assert(status.reports_seen==0U&&status.updated_at_ms==0U);
+    assert((status.latest_sample.valid&(APP_SAMPLE_VALID_TEMP|APP_SAMPLE_VALID_FLOW))==0U);
+    PublishSlave(1U);assert(lastFrame.type==0x10U&&lastFrame.payload[10]==0U);
+    assert(Read32(lastFrame.payload+17)==UINT32_MAX);
+    PublishFlow(1U);assert(lastFrame.type==0x12U&&lastFrame.payload[10]==0U);
+    assert(Read32(lastFrame.payload+19)==UINT32_MAX);
+    assert(AppIpc_ReadSlaveStatus(2U,&status));
+    assert(memcmp(&status,&peerBefore,sizeof(status))==0);
+    source.src.nwkAddr=0x1234U;Report(&source,2750);assert(Drain()==1U);
+    uint8_t nowFlow[4]={0x88,0x13,0,0}; // 5000 mL/min
+    APP_ZIGBEE_FlowReport(NULL,NULL,&source,0U,ZCL_DATATYPE_UNSIGNED_32BIT,nowFlow,4U,NULL);
+    assert(Drain()==1U);PublishSlave(1U);assert(lastFrame.payload[10]==5U);
+    PublishFlow(1U);assert(lastFrame.payload[10]==5U&&Read32(lastFrame.payload+11)==5000U);
+    assert(Read32(lastFrame.payload+19)==0U);
+    assert(!AppIpc_InvalidateSlaveMeasurements(0U));
+    Integration_MutexAllowed=false;
+    assert(!AppIpc_InvalidateSlaveMeasurements(UINT64_C(0x00124B000ABCDEF0)));
+    Integration_MutexAllowed=true;
+    fclose(capture);capture=NULL;
+    Integration_FreeObjects();
+    puts("MASTER_TEST_PASS: production report callback + production dispatch + real IPC + UART frames; IEEE separation, malformed data, unknown source/value and stale handling passed (fake SDK/RTOS).");
+    return 0;
+}
+
+#include "app_master_control.h"
+uint8_t AppMaster_QueueCommand(uint8_t type,const uint8_t *p,uint8_t n)
+{ (void)type;(void)p;(void)n;return APP_UART_ERR_NOT_READY; }
+bool AppMaster_Read(AppMasterSnapshot *s) { (void)s;return false; }

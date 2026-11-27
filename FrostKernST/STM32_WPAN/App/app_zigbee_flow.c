@@ -107,12 +107,12 @@ void APP_ZIGBEE_ConfigFlowEndpoint(void)
                  (unsigned int)APP_NETWORK_ENDPOINT);
 }
 
-void APP_ZIGBEE_UpdateFlow(void)
+bool APP_ZIGBEE_UpdateFlow(void)
 {
 #if APP_IS_SLAVE
     AppStatus localStatus;
     if (stZigbeeAppInfo.flowCluster == NULL || !AppIpc_ReadLocalStatus(&localStatus)) {
-        return;
+        return false;
     }
     uint32_t value = AppFlowReport_Value(&localStatus.latest_sample, HAL_GetTick());
     enum ZclStatusCodeT status = ZbZclAttrIntegerWrite(
@@ -134,6 +134,9 @@ void APP_ZIGBEE_UpdateFlow(void)
                 (unsigned long)value, bindings);
         }
     }
+    return status == ZCL_STATUS_SUCCESS;
+#else
+    return false;
 #endif
 }
 

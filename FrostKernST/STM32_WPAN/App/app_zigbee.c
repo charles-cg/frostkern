@@ -171,6 +171,7 @@ static void APP_ZIGBEE_ProcessSlaveRejoin(void)
         }
         AppZbRejoin_Lost(&slaveRejoin, now);
         AppIpc_MarkNetworkStopped();
+        APP_ZIGBEE_CancelFreshReports();
         stZigbeeAppInfo.bInitAfterJoin = false;
     }
     AppRejoinResult result;
@@ -182,6 +183,7 @@ static void APP_ZIGBEE_ProcessSlaveRejoin(void)
         if (ok) {
             stZigbeeAppInfo.bInitAfterJoin = true;
             AppIpc_MarkNetworkStarted();
+            APP_ZIGBEE_RequestFreshReports();
             AppZbPersistence_NetworkReady();
             LOG_INFO_APP("[ZB-REJOIN] success, short address 0x%04X",
                 ZbShortAddress(stZigbeeAppInfo.pstZigbee));
@@ -231,6 +233,7 @@ void APP_ZIGBEE_LinkReady(void)
     AppZbRejoin_Ready(&slaveRejoin);
     xEventGroupClearBits(evSystem, APP_EVENT_PARENT_LOST);
     LOG_INFO_APP("[ZB-REJOIN] parent-loss recovery enabled");
+    APP_ZIGBEE_RequestFreshReports();
 #endif
 }
 
@@ -589,8 +592,7 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
 #if APP_IS_SLAVE
         APP_ZIGBEE_ProcessSlaveRejoin();
         if (AppIpc_NetworkStarted()) {
-            APP_ZIGBEE_UpdateTemperature();
-            APP_ZIGBEE_UpdateFlow();
+            APP_ZIGBEE_ServiceMeasurements();
         }
 #else
         APP_ZIGBEE_ProcessReportRecovery();
@@ -638,6 +640,13 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
                     LOG_DISPLAY64(),
                     (unsigned int)nodeId,
                     LOG_NUMBER64(command.ieee_address));
+
+                if (!AppIpc_InvalidateSlaveMeasurements(command.ieee_address)) {
+                    LOG_ERROR_APP("[ZB-FRESH MASTER] could not invalidate previous measurements");
+                } else {
+                    LOG_INFO_APP("[ZB-FRESH MASTER] Slave %u rejoined; waiting for new measurements",
+                        (unsigned int)nodeId);
+                }
 
                 APP_ZIGBEE_ConfigureTemperatureReports(
                     nodeId,
@@ -708,8 +717,9 @@ static void APP_ZIGBEE_NwkFormOrJoinTask(void *argument)
 
 #else
 
-        LOG_INFO_APP(
-            "Zigbee command not supported by Slave");
+        if (command.type != APP_ZB_COMMAND_SAMPLE_READY) {
+            LOG_INFO_APP("Zigbee command not supported by Slave");
+        }
 
 #endif
     }

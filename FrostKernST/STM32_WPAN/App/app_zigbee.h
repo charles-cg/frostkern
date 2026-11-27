@@ -114,13 +114,16 @@ extern void       APP_ZIGBEE_Error                        ( uint32_t ErrId, uint
 extern void       APP_ZIGBEE_SerialCommandInstallCode     ( uint8_t * pRxBuffer, uint16_t iRxBufferSize );
 
 /* USER CODE BEGIN EFP */
-void APP_ZIGBEE_UpdateTemperature(void);
+bool APP_ZIGBEE_UpdateTemperature(void);
 void APP_ZIGBEE_ConfigFlowEndpoint(void);
-void APP_ZIGBEE_UpdateFlow(void);
+bool APP_ZIGBEE_UpdateFlow(void);
 void APP_ZIGBEE_ConfigureFlowReports(uint8_t nodeId, uint16_t shortAddress);
 void APP_ZIGBEE_ProcessFlowReportRetries(void);
 void APP_ZIGBEE_ProcessReportRecovery(void);
 void APP_ZIGBEE_LinkReady(void);
+void APP_ZIGBEE_RequestFreshReports(void);
+void APP_ZIGBEE_CancelFreshReports(void);
+void APP_ZIGBEE_ServiceMeasurements(void);
 void APP_ZIGBEE_ConfigureTemperatureReports(
     uint8_t nodeId, uint16_t shortAddress);
 void APP_ZIGBEE_ProcessTemperatureReportRetries(void);

@@ -47,6 +47,7 @@ void osSemaphoreAcquire(int,uint32_t);
 void APP_ZIGBEE_NwkFormOrJoin(void);
 void APP_ZIGBEE_UpdateTemperature(void);
 void APP_ZIGBEE_ProcessSlaveRejoin(void);
+void APP_ZIGBEE_ServiceMeasurements(void);
 void APP_ZIGBEE_UpdateFlow(void);
 void APP_ZIGBEE_ProcessFlowReportRetries(void);
 void APP_ZIGBEE_ProcessReportRecovery(void);

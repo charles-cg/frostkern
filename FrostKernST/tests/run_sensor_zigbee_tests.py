@@ -57,6 +57,15 @@ def main():
             elif task[flow_end]=='}':
                 depth-=1
                 if depth==0:break
+        join_start=task.index('{',task.index('command.type == APP_ZB_COMMAND_CONFIG_TEMP_REPORT'))
+        depth=0
+        for join_end in range(join_start,len(task)):
+            if task[join_end]=='{':depth+=1
+            elif task[join_end]=='}':
+                depth-=1
+                if depth==0:break
+        (temp/'zigbee_join_dispatch.inc').write_text(
+            'static void Integration_DispatchJoin(AppZbCommand command)\n'+task[join_start:join_end+1]+'\n')
         (temp/'zigbee_flow_dispatch.inc').write_text(
             'static void Integration_DispatchFlow(AppZbCommand command)\n'+task[flow_start:flow_end+1]+'\n')
         flags=['gcc','-std=c11','-Wall','-Wextra','-Werror','-pedantic','-g']

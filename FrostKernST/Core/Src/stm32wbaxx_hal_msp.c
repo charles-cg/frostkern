@@ -234,29 +234,8 @@ void HAL_LPTIM_MspInit(LPTIM_HandleTypeDef* hlptim)
 
 void HAL_LPTIM_MspPostInit(LPTIM_HandleTypeDef* hlptim)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if(hlptim->Instance==LPTIM2)
-  {
-    /* USER CODE BEGIN LPTIM2_MspPostInit 0 */
-
-    /* USER CODE END LPTIM2_MspPostInit 0 */
-
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    /**LPTIM2 GPIO Configuration
-    PA1     ------> LPTIM2_CH2
-    */
-    GPIO_InitStruct.Pin = GPIO_PIN_1;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = GPIO_AF13_LPTIM2;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    /* USER CODE BEGIN LPTIM2_MspPostInit 1 */
-
-    /* USER CODE END LPTIM2_MspPostInit 1 */
-  }
-
+    /* PA1 belongs exclusively to TIM3_CH2. */
+    (void)hlptim;
 }
 /**
   * @brief LPTIM MSP De-Initialization

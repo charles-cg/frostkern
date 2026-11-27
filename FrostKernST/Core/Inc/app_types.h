@@ -7,7 +7,7 @@
  * NO transmitir structs crudos por UART/Zigbee: padding, enums y orden de
  * bytes no constituyen un protocolo. Serializar cada campo explicitamente.
  */
-#define APP_DATA_CONTRACT_VERSION 1U
+#define APP_DATA_CONTRACT_VERSION 2U
 #define APP_SLAVE_COUNT           2U
 #define APP_NODE_MASTER           0U
 #define APP_NODE_SLAVE_1          1U
@@ -41,6 +41,9 @@ typedef uint32_t AppSampleValidFlags;
 typedef struct {
     uint8_t source_node_id;    /* Slave 1/2; 254 antes de asignar su ID. */
     uint32_t sequence;         /* Aumenta por muestra; reinicia al arrancar. */
+    /* Internal handshake only; not serialized over Zigbee/UART. A refresh
+     * generation is acknowledged after taking a NEW complete flow window. */
+    uint32_t refresh_generation;
     uint32_t timestamp_ms;     /* Tiempo local desde arranque, modulo 2^32. */
     AppSampleValidFlags valid; /* Un campo sin bit valido NO se interpreta. */
     int16_t temperature_centi_c; /* 2534 = 25.34 grados C. */

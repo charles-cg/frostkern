@@ -707,6 +707,14 @@ void MX_GPIO_Init(void)
   HAL_NVIC_EnableIRQ(EXTI7_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+#if APP_IS_MASTER
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_10, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin=GPIO_PIN_1|GPIO_PIN_10;
+  GPIO_InitStruct.Mode=GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull=GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed=GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA,&GPIO_InitStruct);
+#endif
 
   /* USER CODE END MX_GPIO_Init_2 */
 }

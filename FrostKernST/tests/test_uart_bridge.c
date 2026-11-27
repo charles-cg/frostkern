@@ -79,6 +79,15 @@ int main(void)
 {
     AppUartBridge_Start(); AppUartBridge_Start();
     assert(createCount == 1U);
+    PublishMaster();
+    assert(capturedCount==2U && captured[0].type==APP_UART_MASTER_AIR);
+    assert(captured[0].length==12U && captured[0].payload[1]==5U);
+    assert((int16_t)((uint16_t)captured[0].payload[2]|((uint16_t)captured[0].payload[3]<<8U))==-525);
+    assert(captured[1].type==APP_UART_FAN_STATUS && captured[1].length==33U);
+    assert(captured[1].payload[3]==42U && captured[1].payload[5]==100U);
+    AppUartFrame control={.type=APP_UART_SET_AC_FAN,.length=2U,.sequence=9U,.payload={1U,42U}};
+    HandleFrame(&control);assert(Last()->type==APP_UART_ACK && Last()->sequence==9U);
+    capturedCount=0U;
     AppUartFrame request = {.type = APP_UART_PING, .sequence = 42U};
     HandleFrame(&request);
     assert(Last()->type == APP_UART_PONG && Last()->sequence == 42U);
@@ -148,3 +157,8 @@ int main(void)
     puts("UART bridge: task creation, ping, validation, queued ACK, unsupported commands, telemetry validity/staleness/wrap, TX failures and RX recovery passed (fake HAL/RTOS).");
     return 0;
 }
+
+uint8_t AppMaster_QueueCommand(uint8_t type,const uint8_t *p,uint8_t n)
+{ assert(type==APP_UART_SET_AC_FAN || type==APP_UART_SET_AUTO_FAN || type==APP_UART_FAN_BENCH);(void)p;(void)n;return APP_UART_OK_QUEUED; }
+bool AppMaster_Read(AppMasterSnapshot *out)
+{ *out=(AppMasterSnapshot){.air_seen=true,.air_valid=true,.air_centi=-525,.air_updated_ms=NowMs()-100U,.ac_enabled=true,.ac_requested=42U,.ac_applied=42U,.radiator={true,100U,APP_FAN_NO_FRESH_INPUT}};return true; }

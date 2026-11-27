@@ -83,14 +83,27 @@ static void SensorTask(void *argument)
     uint16_t previousCount = flowReady ? ReadFlowCounter() : 0U;
     TickType_t previousTick = xTaskGetTickCount();
     uint32_t sequence = 0U;
+    uint32_t completedRefresh = 0U;
 
     for (;;) {
 
-        vTaskDelay(pdMS_TO_TICKS(1000U));
+        EventBits_t events = xEventGroupWaitBits(evSystem, APP_EVENT_SAMPLE_REQUEST,
+            pdTRUE, pdFALSE, pdMS_TO_TICKS(1000U));
+        if ((events & APP_EVENT_SAMPLE_REQUEST) != 0U) {
+            uint32_t requested = AppIpc_GetFreshSampleRequest();
+            /* A tiny flow interval can falsely yield zero or a pulse spike.
+             * Start a NEW full one-second counting window after the request.
+             * Requests arriving during this window remain pending for next time. */
+            if (flowReady) { previousCount = ReadFlowCounter(); }
+            previousTick = xTaskGetTickCount();
+            vTaskDelay(pdMS_TO_TICKS(1000U));
+            completedRefresh = requested;
+        }
 
         AppSample sample = {
             .source_node_id = gDeviceId.node_id,
             .sequence = ++sequence,
+            .refresh_generation = completedRefresh,
             .battery_percent = APP_BATTERY_PERCENT_UNKNOWN
         };
 

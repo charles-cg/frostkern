@@ -24,6 +24,9 @@ static AppZbRejoin slaveRejoin;
 static QueueHandle_t rejoinResults;
 static struct ZbMsgFilterT *parentFilter;
 static unsigned requests,resets,restores,saves,filters,removed;
+static unsigned freshRequests,freshCancels;
+void APP_ZIGBEE_RequestFreshReports(void){++freshRequests;}
+void APP_ZIGBEE_CancelFreshReports(void){++freshCancels;}
 static bool inFlight,refused;
 static void (*callback)(struct ZbNlmeJoinConfT *,void *);
 static void *callbackArg;
@@ -70,7 +73,7 @@ int main(void)
     for(unsigned i=0;i<10U;++i)APP_ZIGBEE_ProcessSlaveRejoin();
     assert(requests==1U); // Never overlap requests.
     lost();assert(requests==1U); // Duplicate link-failure events coalesce.
-    done(ZB_STATUS_SUCCESS);assert(AppIpc_NetworkStarted()&&saves==1U);
+    done(ZB_STATUS_SUCCESS);assert(AppIpc_NetworkStarted()&&saves==1U&&freshRequests==2U&&freshCancels>=1U);
     lost();assert(requests==2U);
     struct ZbNlmeJoinConfT stale={ZB_STATUS_SUCCESS};
     APP_ZIGBEE_RejoinCallback(&stale,oldTicket);APP_ZIGBEE_ProcessSlaveRejoin();

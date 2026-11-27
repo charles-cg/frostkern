@@ -79,3 +79,16 @@ void Integration_Log(const char *format,...){(void)format;}
 
 EventBits_t xEventGroupClearBits(EventGroupHandle_t h, EventBits_t bits)
 {EventBits_t before=*(EventBits_t *)h;*(EventBits_t *)h &= ~bits;return before;}
+
+__attribute__((weak)) void vTaskDelay(TickType_t ticks)
+{Integration_TimeMs += ticks * portTICK_PERIOD_MS;}
+EventBits_t xEventGroupWaitBits(EventGroupHandle_t h, EventBits_t wanted,
+                              BaseType_t clear, BaseType_t all, TickType_t wait)
+{
+    EventBits_t bits=*(EventBits_t *)h;
+    bool ready=all ? (bits&wanted)==wanted : (bits&wanted)!=0U;
+    if(!ready && wait!=0U) {vTaskDelay(wait);bits=*(EventBits_t *)h;}
+    ready=all ? (bits&wanted)==wanted : (bits&wanted)!=0U;
+    if(ready && clear) {*(EventBits_t *)h &= ~wanted;}
+    return bits;
+}

@@ -25,6 +25,8 @@ AppDeviceId gDeviceId;
 QueueHandle_t qSample = NULL;
 QueueHandle_t qConfig = NULL;
 AppStatus gStatus;
+static uint32_t freshSampleRequest;
+static uint32_t freshSampleNotified;
 
 #else
 
@@ -148,12 +150,47 @@ bool AppIpc_PublishSample(const AppSample *sample)
     /* SensorTask is the sole producer. Control consumes qSample; Zigbee
      * reads the protected snapshot without consuming the control queue.
      */
-    return xQueueOverwrite(qSample, &snapshot) == pdPASS;
+    bool published = xQueueOverwrite(qSample, &snapshot) == pdPASS;
+    if (published && snapshot.refresh_generation != 0U &&
+        snapshot.refresh_generation != freshSampleNotified) {
+        AppZbCommand command = {0};
+        command.type = APP_ZB_COMMAND_SAMPLE_READY;
+        if (xQueueSend(qZbCommand, &command, 0U) == pdPASS) {
+            freshSampleNotified = snapshot.refresh_generation;
+        }
+        /* Queue pressure must not lose the sample: ZbAppTask also polls the
+         * protected snapshot. A later sample retries this notification. */
+    }
+    return published;
 }
 
 #endif
 
 #if APP_IS_SLAVE
+
+uint32_t AppIpc_RequestFreshSample(void)
+{
+    if (gStatusMutex == NULL || evSystem == NULL ||
+        xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE) {
+        return 0U;
+    }
+    if (++freshSampleRequest == 0U) { ++freshSampleRequest; }
+    uint32_t generation = freshSampleRequest;
+    xSemaphoreGive(gStatusMutex);
+    xEventGroupSetBits(evSystem, APP_EVENT_SAMPLE_REQUEST);
+    return generation;
+}
+
+uint32_t AppIpc_GetFreshSampleRequest(void)
+{
+    if (gStatusMutex == NULL ||
+        xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE) {
+        return 0U;
+    }
+    uint32_t generation = freshSampleRequest;
+    xSemaphoreGive(gStatusMutex);
+    return generation;
+}
 
 bool AppIpc_ReadLocalStatus(AppStatus *out)
 {
@@ -483,3 +520,22 @@ bool AppIpc_SaveSlaveFlow(uint64_t ieee, uint32_t flow_ml_min, bool valid)
     return false;
 #endif
 }
+
+#if APP_IS_MASTER
+bool AppIpc_InvalidateSlaveMeasurements(uint64_t ieee)
+{
+    uint8_t id = AppIpc_RegisterSlave(ieee);
+    if (id == APP_NODE_UNASSIGNED ||
+        xSemaphoreTake(gStatusMutex, pdMS_TO_TICKS(20U)) != pdTRUE) {
+        return false;
+    }
+    AppStatus *status = &gSlaveStatus[id - 1U];
+    status->latest_sample.valid &= ~(APP_SAMPLE_VALID_TEMP | APP_SAMPLE_VALID_FLOW);
+    status->reports_seen &= ~(APP_SAMPLE_VALID_TEMP | APP_SAMPLE_VALID_FLOW);
+    status->temperature_report_at_ms = 0U;
+    status->flow_report_at_ms = 0U;
+    status->updated_at_ms = 0U;
+    xSemaphoreGive(gStatusMutex);
+    return true;
+}
+#endif

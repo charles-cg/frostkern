@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <stdlib.h>
+#include <string.h>
 #include <esp_system.h>
 // Local credentials stay outside Git. A fresh clone builds with Wi-Fi off.
 #if __has_include("wifi_config.h")
@@ -23,7 +25,7 @@ extern "C" {
 #endif
 
 // XIAO ESP32-C5: D7 = GPIO12 (RX), D6 = GPIO11 (TX).
-// No se envian comandos al STM32. Para la prueba externa, deja D6 sin conectar.
+// D6/GPIO11 -> PA11 is required for commands. Common GND remains required.
 static AppUartParser parser;
 static uint32_t rxBytes, goodFrames, badMessages;
 static uint32_t lastByteMs, lastStatsMs;
@@ -39,6 +41,26 @@ static void printIeee(const uint8_t *p) {
 }
 
 static void showFrame(const AppUartFrame *f) {
+  if(f->type==APP_UART_ACK || f->type==APP_UART_NACK) {
+    if(f->length!=2U){++badMessages;return;}
+    Serial.printf("[CMD] %s tipo=0x%02X seq=%u resultado=%u (ACK=encolado; ver FANS)\r\n",
+      f->type==APP_UART_ACK ? "ACK":"NACK",f->payload[0],f->sequence,f->payload[1]); return;
+  }
+  if(f->type==APP_UART_MASTER_AIR) {
+    if(f->length!=12U || f->payload[0]!=1U){++badMessages;return;}
+    const uint8_t *a=f->payload;
+    bool valid=(a[1]&5U)==5U && !(a[1]&2U);
+    int16_t t=(int16_t)((uint16_t)a[2]|(uint16_t)a[3]<<8U);
+    if(valid) Serial.printf("[AIR MASTER] T=%d centi-C",(int)t);
+    else Serial.print("[AIR MASTER] T=NO DISPONIBLE");
+    Serial.printf(" updated_at_ms=%lu age_ms=%lu\r\n",(unsigned long)read32(a+4),(unsigned long)read32(a+8)); return;
+  }
+  if(f->type==APP_UART_FAN_STATUS) {
+    if(f->length!=33U || f->payload[0]!=1U){++badMessages;return;}
+    const uint8_t *a=f->payload;
+    Serial.printf("[FANS] AC enabled=%u seleccionado=%u%% aplicado=%u%% AUTO enabled=%u aplicado=%u%% reason=%u bench=%u input_age_ms=%lu\r\n",
+      a[1],a[2],a[3],a[4],a[5],a[6],a[7],(unsigned long)read32(a+18)); return;
+  }
   const uint8_t *p = f->payload;
   uint8_t expected = 0;
   switch (f->type) {
@@ -182,6 +204,56 @@ static void uploadTest() {
 }
 #endif
 
+
+static uint8_t commandSeq;
+static void write16(uint8_t *p,int value){p[0]=(uint8_t)value;p[1]=(uint8_t)((uint16_t)value>>8U);}
+static void sendCommand(uint8_t type,const uint8_t *p,size_t n){
+  uint8_t frame[APP_UART_MAX_FRAME];
+  size_t len=AppUart_Encode(type,commandSeq++,p,n,frame,sizeof(frame));
+  if(len) Serial1.write(frame,len);
+}
+static bool parseInteger(const char *s,long *out){
+  if(!s || !*s)return false;
+  char *end; long value=strtol(s,&end,10);
+  if(*end!='\0' || value < -4000L || value > 12500L)return false;
+  *out=value;return true;
+}
+static void commandLine(char *line){
+  char *tokens[7];unsigned count=0;char *save=nullptr;
+  for(char *t=strtok_r(line," \t",&save);t && count<7;t=strtok_r(nullptr," \t",&save))tokens[count++]=t;
+  uint8_t p[16]={0};long v[4];
+  if(count==3 && strcmp(tokens[0],"AC")==0 &&
+     (strcmp(tokens[1],"ON")==0 || strcmp(tokens[1],"OFF")==0) &&
+     parseInteger(tokens[2],&v[0]) && v[0]>=0 && v[0]<=100){
+    p[0]=strcmp(tokens[1],"ON")==0;p[1]=(uint8_t)v[0];sendCommand(APP_UART_SET_AC_FAN,p,2);return;
+  }
+  if(count==2 && strcmp(tokens[0],"AUTO")==0 && strcmp(tokens[1],"OFF")==0){sendCommand(APP_UART_SET_AUTO_FAN,p,16);return;}
+  if(count==5 && strcmp(tokens[0],"AUTO")==0){
+    bool ok=true;for(unsigned i=0;i<4;i++)ok=ok && parseInteger(tokens[i+1],&v[i]);
+    if(ok && v[0]<v[1] && v[1]<v[2] && v[3]>=1 && v[3]<=100){
+      const uint8_t target[8]={0x00,0x80,0xE1,0xFF,0xFE,0x32,0xFC,0x18};
+      p[0]=1;memcpy(p+1,target,8);write16(p+9,(int)v[0]);write16(p+11,(int)v[1]);write16(p+13,(int)v[2]);p[15]=(uint8_t)v[3];
+      sendCommand(APP_UART_SET_AUTO_FAN,p,16);return;
+    }
+  }
+  if(count==2 && strcmp(tokens[0],"BENCH")==0){
+    if(strcmp(tokens[1],"OFF")==0){sendCommand(APP_UART_FAN_BENCH,p,2);return;}
+    if(parseInteger(tokens[1],&v[0]) && v[0]>=0 && v[0]<=100){p[0]=1;p[1]=(uint8_t)v[0];sendCommand(APP_UART_FAN_BENCH,p,2);return;}
+  }
+  Serial.println("Comandos: AC ON 40 | AC OFF 40 | AUTO off_cC on_cC full_cC min_pct | AUTO OFF | BENCH pct | BENCH OFF");
+}
+static void serviceCommands(){
+  static char line[96];static size_t used;static bool overflow;
+  while(Serial.available()>0){
+    int c=Serial.read();if(c<0)break;
+    if(c=='\n' || c=='\r'){
+      if(overflow)Serial.println("[CMD] linea demasiado larga");
+      else if(used){line[used]='\0';commandLine(line);}
+      used=0;overflow=false;
+    }else if(used+1<sizeof(line)){line[used++]=(char)c;}else{overflow=true;}
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   Serial1.setRxBufferSize(1024);
@@ -190,13 +262,14 @@ void setup() {
   const uint32_t start = millis();
   while (!Serial && (uint32_t)(millis() - start) < 2500U) delay(10);
   Serial.println("\r\nFrostKern: receptor UART v1 + temperatura/caudal para XIAO ESP32-C5");
-  Serial.println("RX=D7/GPIO12, 115200 8N1. No envia comandos.");
+  Serial.println("RX=D7/GPIO12, 115200 8N1. D6 -> PA11 para comandos.");
   const esp_reset_reason_t reason = esp_reset_reason();
   Serial.printf("[BOOT] reset_reason=%d %s\r\n", (int)reason, resetReasonName(reason));
   Serial.println("Esperando al Master. [RX] bytes=0 es normal sin conectar PA12.");
 }
 
 void loop() {
+  serviceCommands();
   serviceWifi();
   while (Serial1.available() > 0) {
     const uint32_t now = millis();

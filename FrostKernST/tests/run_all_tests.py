@@ -7,7 +7,7 @@ def run(args):
     subprocess.run([str(x) for x in args],cwd=ROOT,check=True,
                    env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'})
 def main():
-    for runner in ['run_flow_rejoin_tests.py','run_persistence_tests.py',
+    for runner in ['run_master_control_tests.py','run_reconnect_fresh_sample_tests.py','run_flow_rejoin_tests.py','run_persistence_tests.py',
                    'run_zb_recovery_tests.py','run_zigbee_diagnostics_tests.py']:
         run([sys.executable,ROOT/'tests'/runner])
     flags=['gcc','-std=c11','-Wall','-Wextra','-Werror','-pedantic',

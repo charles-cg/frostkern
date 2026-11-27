@@ -7,6 +7,7 @@
 #include "app_ipc.h"
 #include "app_task_config.h"
 #include "app_uart_protocol.h"
+#include "app_master_control.h"
 #include "main.h"
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -172,6 +173,11 @@ static void HandleFrame(const AppUartFrame *frame)
         }
         return;
     }
+    if(frame->type==APP_UART_SET_AC_FAN || frame->type==APP_UART_SET_AUTO_FAN ||
+       frame->type==APP_UART_FAN_BENCH) {
+        Reply(frame,AppMaster_QueueCommand(frame->type,frame->payload,frame->length));
+        return;
+    }
     /* SET_SETPOINT is not forwarded until the Zigbee control path exists. */
     Reply(frame, APP_UART_ERR_UNSUPPORTED);
 }
@@ -246,6 +252,33 @@ static void PublishFlow(uint8_t nodeId)
     (void)SendFrame(APP_UART_TELEMETRY_FLOW, txSequence++, payload, sizeof(payload));
 }
 
+static void PublishMaster(void)
+{
+    AppMasterSnapshot s;
+    if(!AppMaster_Read(&s)) { return; }
+    uint32_t age=s.air_seen ? NowMs()-s.air_updated_ms : UINT32_MAX;
+    bool valid=s.air_seen && s.air_valid && age<=5000U;
+    uint8_t air[12]={APP_UART_PROTOCOL_VERSION,0U};
+    air[1]=(uint8_t)((valid ? APP_UART_TEMP_VALID:0U)|
+        (s.air_seen ? APP_UART_TEMP_REPORT_SEEN:0U)|
+        (s.air_seen && age>5000U ? APP_UART_TEMP_STALE:0U));
+    Put16(air+2,valid ? (uint16_t)s.air_centi:0U);
+    Put32(air+4,s.air_updated_ms); Put32(air+8,age);
+    (void)SendFrame(APP_UART_MASTER_AIR,txSequence++,air,sizeof(air));
+    uint8_t fans[33]={APP_UART_PROTOCOL_VERSION};
+    fans[1]=s.ac_enabled; fans[2]=s.ac_requested; fans[3]=s.ac_applied;
+    fans[4]=s.automatic.enabled; fans[5]=s.radiator.duty;
+    fans[6]=(uint8_t)s.radiator.reason; fans[7]=s.bench_mode;
+    uint64_t ieee=s.automatic.target_ieee;
+    for(unsigned i=0U;i<8U;++i) { fans[8+i]=(uint8_t)(ieee>>(56U-8U*i)); }
+    Put16(fans+16,(uint16_t)s.input_centi); Put32(fans+18,s.input_age_ms);
+    Put16(fans+22,(uint16_t)s.automatic.off_centi);
+    Put16(fans+24,(uint16_t)s.automatic.on_centi);
+    Put16(fans+26,(uint16_t)s.automatic.full_centi);
+    fans[28]=s.automatic.minimum_percent; Put32(fans+29,APP_FAN_PWM_HZ);
+    (void)SendFrame(APP_UART_FAN_STATUS,txSequence++,fans,sizeof(fans));
+}
+
 static void BridgeTask(void *argument)
 {
     (void)argument;
@@ -299,6 +332,7 @@ static void BridgeTask(void *argument)
         if ((TickType_t)(now - lastPublication) >= pdMS_TO_TICKS(PUBLICATION_MS)) {
             lastPublication = now;
             PublishHeartbeat();
+            PublishMaster();
             for (uint8_t id = 1U; id <= APP_SLAVE_COUNT; ++id) {
                 PublishSlave(id);
                 PublishFlow(id);

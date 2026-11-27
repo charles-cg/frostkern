@@ -606,7 +606,7 @@ static void APP_ZIGBEE_TemperatureReport(
 
 #endif
 
-void APP_ZIGBEE_UpdateTemperature(void)
+bool APP_ZIGBEE_UpdateTemperature(void)
 {
 #if APP_IS_SLAVE
     AppStatus localStatus;
@@ -634,7 +634,7 @@ void APP_ZIGBEE_UpdateTemperature(void)
             LOG_ERROR_APP("[ZB-DIAG SLAVE] no cluster or shared snapshot unavailable");
         }
 #endif
-        return;
+        return false;
     }
 
     _Static_assert(APP_TEMPERATURE_REPORT_UNKNOWN ==
@@ -687,6 +687,9 @@ void APP_ZIGBEE_UpdateTemperature(void)
                      (unsigned int)reportableStatus, bindings);
     }
 #endif
+    return result == ZCL_STATUS_SUCCESS;
+#else
+    return false;
 #endif
 }
 

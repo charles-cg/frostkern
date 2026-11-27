@@ -27,10 +27,12 @@
 #define APP_EVENT_MODE_CHANGE     (1UL << 3)
 #define APP_EVENT_NETWORK_STARTED (1UL << 4)
 #define APP_EVENT_PARENT_LOST     (1UL << 5)
+#define APP_EVENT_SAMPLE_REQUEST  (1UL << 6)
 #define APP_ZB_COMMAND_PERMIT_JOIN 1U
 #define APP_ZB_COMMAND_CONFIG_TEMP_REPORT 2U
 #define APP_ZB_COMMAND_TEMP_RECEIVED 3U
 #define APP_ZB_COMMAND_FLOW_RECEIVED 4U
+#define APP_ZB_COMMAND_SAMPLE_READY 5U
 
 /* Comando de BridgeTask hacia ZbAppTask */
 typedef struct
@@ -69,6 +71,8 @@ extern AppStatus gStatus;
  */
 bool AppIpc_PublishSample(const AppSample *sample);
 bool AppIpc_ReadLocalStatus(AppStatus *out);
+uint32_t AppIpc_RequestFreshSample(void);
+uint32_t AppIpc_GetFreshSampleRequest(void);
 
 #else
 
@@ -76,6 +80,7 @@ bool AppIpc_ReadLocalStatus(AppStatus *out);
 extern AppStatus gSlaveStatus[APP_SLAVE_COUNT];
 
 bool AppIpc_ReadSlaveStatus(uint8_t node_id, AppStatus *out);
+bool AppIpc_InvalidateSlaveMeasurements(uint64_t ieee);
 
 #endif
 

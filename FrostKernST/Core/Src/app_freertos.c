@@ -25,6 +25,9 @@
 #include "app_ipc.h"
 #include "app_uart_bridge.h"
 #include "sensor_task.h"
+#if APP_IS_MASTER
+#include "app_master_control.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -107,6 +110,9 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
+#if APP_IS_MASTER
+  AppMaster_Start();
+#endif
   AppUartBridge_Start();
 #if APP_IS_SLAVE
   SensorTask_Start();

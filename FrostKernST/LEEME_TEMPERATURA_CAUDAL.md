@@ -46,8 +46,7 @@ No vuelvas a aplicar los parches antiguos sobre esta version.
    No unas los pines 5 V ni 3V3 de los dos equipos en este montaje.
 3. Abre `ESP32/FrostKern_UART_Receiver/FrostKern_UART_Receiver.ino` en Arduino IDE.
    Mantiene junto al sketch los dos archivos `app_uart_protocol.c/.h` y
-   `wifi_config.example.h`; no copies solo el texto del .ino a un sketch vacio.
-   El sketch usa el ejemplo sin Wi-Fi hasta que crees tu archivo local `wifi_config.h`.
+   `wifi_config.h`; no copies solo el texto del .ino a un sketch vacio.
 4. Selecciona XIAO_ESP32C5, su puerto COM y USB CDC On Boot -> Enabled, como
    en la prueba que ya funciono. Carga el programa.
 5. Abre el Monitor Serie a 115200 baudios. No abras ese mismo COM en PuTTY
@@ -130,7 +129,7 @@ temporal. Consulta tambien `FrostKernST/LEEME_PERSISTENCIA.md`.
 ## Wi-Fi opcional en Arduino
 
 Para probar primero el recorrido completo de sensores, el Wi-Fi viene apagado.
-Copia `wifi_config.example.h` como `wifi_config.h` y cambia `FROSTKERN_WIFI_ENABLED` a 1 y completa SSID y clave
+En `wifi_config.h` cambia `FROSTKERN_WIFI_ENABLED` a 1 y completa SSID y clave
 si quieres probar la conexion a tu router/hotspot. Al conectar imprimira la IP.
 El procesamiento UART sigue activo aunque no encuentre la red.
 
